@@ -21,8 +21,8 @@ class CommandsTest {
                 mergeMavenMetadata(metadata, "com.lightningkite.stack", "$repo-catalog", version, now)
             }!!)
         )
-        publishCatalog("up", "2026.11.11.0851", "1000.0.0", "1000.1.0")
-        publishCatalog("side", "2026.11.11.0851")
+        publishCatalog("up", "5.4.1", "1000.0.0", "1000.1.0")
+        publishCatalog("side", "5.4.1")
         write("down/settings.gradle.kts", """
             create("up") { from("com.lightningkite.stack:up-catalog:1000.0.0") }
             create("side") { from("com.lightningkite.stack:side-catalog:unreleased") }
@@ -33,7 +33,7 @@ class CommandsTest {
         pinToLatest(repos.last(), repos) { _, _ -> bucket }
 
         assertEquals(
-            mapOf("up" to "1000.1.0", "side" to "2026.11.11.0851", "never" to "unreleased"),
+            mapOf("up" to "1000.1.0", "side" to "unreleased", "never" to "unreleased"),
             pins(work.resolve("down/settings.gradle.kts").readText()),
         )
     }

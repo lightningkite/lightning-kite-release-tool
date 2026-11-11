@@ -48,6 +48,10 @@ private class Workspace(rehearsalBuckets: File?) {
         stackProject = home.resolve("../lightning-kite-stack-catalog").normalize(),
         journal = Journal(home.resolve("build/lk-journal.json")),
     )
+
+    init {
+        println("Configured...")
+    }
 }
 
 // kotliner-cli can't take a list of names, so --rebuild is one comma-separated argument.

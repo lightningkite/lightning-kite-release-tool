@@ -80,21 +80,20 @@ class CatalogsTest {
     }
 
     @Test
-    fun catalogVersionsStartAtEpochOneAndOutrankTheTimestampsBeforeThem() {
-        val timestamps = listOf("2026.11.11.0851", "2026.11.11.0912")
+    fun onlyEpochVersionsAreCatalogReleases() {
+        // lightning-server-catalog: two catalogs published before this tool, under the library's own version.
+        val beforeTheTool = listOf("5.4.0", "5.4.1", "unspecified", "local")
         assertEquals(null, latestCatalog(listOf()))
-        assertEquals("2026.11.11.0912", latestCatalog(timestamps))
-        assertEquals(Version(1000, 0, 0), nextCatalogVersion(timestamps, Bump.Patch))
-        assertEquals("1000.0.0", latestCatalog(timestamps + "1000.0.0"))
-        assertEquals(Version(1000, 1, 0), nextCatalogVersion(timestamps + "1000.0.0" + "1000.0.1", Bump.Minor))
+        assertEquals(null, latestCatalog(beforeTheTool))
+        assertEquals(Version(1000, 0, 0), nextCatalogVersion(beforeTheTool, Bump.Minor))
+        assertEquals("1000.0.0", latestCatalog(beforeTheTool + "1000.0.0"))
+        assertEquals(Version(1000, 1, 0), nextCatalogVersion(beforeTheTool + "1000.0.0" + "1000.0.1", Bump.Minor))
     }
 
     @Test
     fun catalogVersionsAreComparedAsNumbers() {
         assertEquals("1000.10.0", latestCatalog(listOf("1000.9.0", "1000.10.0", "999.99.99")))
         assertEquals(Version(1000, 10, 1), nextCatalogVersion(listOf("1000.9.0", "1000.10.0"), Bump.Patch))
-        assertEquals("2026.11.11.0851", latestCatalog(listOf("2026.11.11.0851", "2026.9.30.2359", "unspecified", "local")))
-        assertEquals(null, latestCatalog(listOf("unspecified")))
     }
 
     private val settings = """

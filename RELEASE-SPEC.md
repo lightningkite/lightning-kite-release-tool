@@ -113,7 +113,8 @@ lightning-server-kiteui, lightning-bot (own bucket, outside the stack catalog).
 1. Hash every module; fetch the release records in batches.  Nothing changed and no dependency major → next repo.
 2. If a module was recorded against an older major of another repo's module, move that repo's catalog pin in
    `settings.gradle.kts` to its latest catalog.  This happens before anything is built, so source already adapted
-   to the new major compiles.  A pin whose catalog was never published also moves to the latest.
+   to the new major compiles.  A pin whose catalog was never published, or was published before this tool (below epoch 1), also moves to the
+   latest.
 3. Run Gradle once to dump the ABI of the own-changed modules; diff; choose versions in dependency order so bumps
    cascade.
 4. Write the new versions into the modules' `gradle.properties`.
@@ -152,8 +153,8 @@ downstream source (developing against both repos in the metawork composite build
   current version.  Published by Gradle's built-in `version-catalog` plugin from the root script, whenever any
   module of the repo releases, at the version the tool passes as `-PcatalogVersion`.  A catalog's version is an
   aggregate of what moved in it, by the modules' own rules: a module removed or moved to a new major is a major,
-  a module added or moved to a new minor is a minor, anything else a patch.  The first is `1000.0.0`.  (Catalogs
-  released on 2026-11-11 are named by timestamp instead; any epoch-semver version counts as newer than those.)
+  a module added or moved to a new minor is a minor, anything else a patch.  The first is `1000.0.0`; catalogs below epoch 1 were
+  published before this tool and are ignored.
 - **Third-party versions** stay in each repo's own `gradle/libs.versions.toml`.
 - **Super catalog and BOM** `com.lightningkite:stack-catalog` / `stack-bom`: the tool merges the latest per-repo
   catalogs of the five stack repos and publishes both through `../lightning-kite-stack-catalog`, a small plain Gradle project

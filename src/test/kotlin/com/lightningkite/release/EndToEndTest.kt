@@ -2,6 +2,7 @@ package com.lightningkite.release
 
 import java.io.File
 import java.nio.file.Files
+import java.time.ZonedDateTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
@@ -16,8 +17,8 @@ import kotlin.test.assertTrue
  * made by the ones before it.  Slow: every release is a few Gradle runs.
  */
 class EndToEndTest {
-    // Gradle runs tests in release-tool/.
-    private val project = File("..").canonicalFile
+    // Gradle runs tests in the project directory.
+    private val project = File("").canonicalFile
     private val work: File = Files.createTempDirectory("lk-e2e").toFile().canonicalFile
     private val up = work.resolve("up")
     private val down = work.resolve("down")
@@ -154,7 +155,7 @@ class EndToEndTest {
             pluginManagement { repositories { gradlePluginPortal(); mavenCentral() } }
             dependencyResolutionManagement {
                 repositories { mavenLocal(); mavenCentral() }
-                versionCatalogs { create("up") { from("com.lightningkite.stack:up-catalog:unreleased") } }
+                versionCatalogs { create("up") { from("com.lightningkite.stack:up-catalog:5.4.1") } }
             }
             rootProject.name = "down"
             include(":app", ":solo")
@@ -166,6 +167,11 @@ class EndToEndTest {
         write("down/solo/gradle.properties", "group=com.example.down\nversion=1000.0.0")
         write("down/solo/build.gradle.kts", "")
         write("down/solo/src/main/kotlin/Solo.kt", "package down\n\nclass Solo")
+
+        // A catalog published before this tool, under the library's own version: not one of its releases.
+        DirectoryMavenRepository(bucket).put(mapOf(
+            "com/lightningkite/stack/up-catalog/maven-metadata.xml" to mergeMavenMetadata(null, "com.lightningkite.stack", "up-catalog", "5.4.1", ZonedDateTime.now()),
+        ))
 
         for (repo in listOf(up, down)) {
             repo.resolve(".gitignore").writeText("build\n.gradle\n.kotlin\n")
@@ -189,7 +195,7 @@ class EndToEndTest {
         assertEquals(Dependency("1000.0.0", Scope.Implementation), record(bucket, "com.example.up:impl", "1000.0.0")!!.dependencies["com.example.up:base"])
         assertEquals(Dependency("1000.0.0", Scope.Api), record(bucket, "com.example.down:app", "1000.0.0")!!.dependencies["com.example.up:base"])
         assertEquals("1000.0.0", latest("com.lightningkite.stack:up-catalog"))
-        assertEquals("1000.0.0", pin(), "the unpublished pin moved to the released catalog")
+        assertEquals("1000.0.0", pin(), "the pin on a catalog from before the tool moved to its first release")
         assertTrue(mavenLocal.resolve("com/example/up/base/1000.0.0/base-1000.0.0.jar").isFile, "a public release is in mavenLocal too")
         assertTrue(mavenLocal.resolve("com/lightningkite/stack-catalog/1000.0.0").isDirectory)
         assertEquals("Release app 1000.0.0, solo 1000.0.0", git(down, "log", "-1", "--format=%s"))

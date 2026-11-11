@@ -21,6 +21,7 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.CompletionException
 import javax.xml.parsers.DocumentBuilderFactory
+import kotlin.time.measureTime
 
 /** A Maven repository addressed by path, e.g. `com/lightningkite/services/basis/maven-metadata.xml`. */
 interface MavenRepository : AutoCloseable {
@@ -70,9 +71,13 @@ class S3MavenRepository(private val bucket: String, forWriting: Boolean) : Maven
 
     override fun readAll(paths: List<String>): Map<String, String?> = paths
         .associateWith { client.getObject(GetObjectRequest.builder().bucket(bucket).key(it).build(), AsyncResponseTransformer.toBytes()) }
-        .mapValues { (_, request) ->
+        .mapValues { (path, request) ->
             try {
-                request.join().asUtf8String()
+                var r: String = ""
+//                measureTime {
+                    r = request.join().asUtf8String()
+//                }.also { println("Fetching $path took ${it}") }
+                r
             } catch (e: CompletionException) {
                 if (e.cause is NoSuchKeyException) null else throw e
             }

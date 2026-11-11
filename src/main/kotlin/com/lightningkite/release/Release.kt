@@ -1,6 +1,8 @@
 package com.lightningkite.release
 
 import java.io.File
+import kotlin.time.Clock
+import kotlin.time.TimeSource
 
 /** A mistake by the person running the tool, or a failed build: reported as its message, without a stack trace. */
 class UserError(message: String) : Exception(message)
@@ -147,10 +149,11 @@ class Releaser(
         for (settings in repo.settingsFiles) {
             val text = settings.readText()
             journal.edit(settings, withPins(text, pins(text).mapValues { (upstream, pinned) ->
-                val latest = latestCatalog(run.publicCatalogs[upstream].orEmpty())
+                val published = epochCatalogs(run.publicCatalogs[upstream].orEmpty())
+                val latest = published.maxOrNull()?.toString()
                 when {
                     !options.public && upstream in run.reposWithLocalBuilds -> "local"
-                    latest != null && (pinned !in run.publicCatalogs[upstream].orEmpty() || upstream in upstreamsWithNewMajors) -> latest
+                    latest != null && (Version.parseOrNull(pinned) !in published || upstream in upstreamsWithNewMajors) -> latest
                     else -> pinned
                 }
             }))

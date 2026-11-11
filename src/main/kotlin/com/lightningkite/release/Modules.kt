@@ -32,9 +32,10 @@ private val versionLine = Regex("""(?m)^version[ \t]*=[ \t]*(\S+)[ \t]*$""")
 private val groupLine = Regex("""(?m)^group[ \t]*=[ \t]*(\S+)[ \t]*$""")
 private val skippedDirectories = setOf("build", "node_modules", "kotlin-js-store", "buildSrc", "src")
 
-fun discoverModules(root: File): List<Module> = root.walkTopDown()
-    .onEnter { it == root || (it.name !in skippedDirectories && !it.name.startsWith(".")) }
-    .filter { it.name == "gradle.properties" }
+fun discoverModules(root: File): List<Module> = root.listFiles()
+    .filter { it.isDirectory }
+    .map { it.resolve("gradle.properties") }
+    .filter { it.exists() }
     .mapNotNull { file ->
         val text = file.readText()
         val version = versionLine.find(text)?.groupValues?.get(1) ?: return@mapNotNull null

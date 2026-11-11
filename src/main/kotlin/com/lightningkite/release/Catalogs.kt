@@ -124,18 +124,12 @@ fun catalogBump(previous: Map<Coordinate, String>, next: Map<Coordinate, String>
     }.maxOrNull()
 
 /**
- * The newest of a catalog's published versions.  Catalogs released before their versions followed the modules'
- * bump rules are named by timestamp (`2026.11.11.0851`); any epoch-semver version is newer than those.
- * Compared number by number, never as text: as text, `1000.9.0` would outrank `1000.10.0`.  Anything that isn't
- * dot-separated numbers is not a release and is ignored.
+ * The catalogs this tool released.  Ones below epoch 1, such as `5.4.1`, were published before it, under the
+ * library's own version, and say nothing about this tool's catalogs.
  */
-fun latestCatalog(published: List<String>): String? {
-    published.mapNotNull { Version.parseOrNull(it) }.maxOrNull()?.let { return it.toString() }
-    val timestamps = published.mapNotNull { text -> text.split('.').map { it.toIntOrNull() }.takeIf { null !in it }?.let { text to it.filterNotNull() } }
-    return timestamps.maxWithOrNull { (_, a), (_, b) ->
-        a.zip(b).map { (x, y) -> x.compareTo(y) }.firstOrNull { it != 0 } ?: a.size.compareTo(b.size)
-    }?.first
-}
+fun epochCatalogs(published: List<String>): List<Version> = published.mapNotNull { Version.parseOrNull(it) }.filter { it >= Version.epoch(1) }
+
+fun latestCatalog(published: List<String>): String? = epochCatalogs(published).maxOrNull()?.toString()
 
 fun nextCatalogVersion(published: List<String>, bump: Bump): Version =
-    published.mapNotNull { Version.parseOrNull(it) }.maxOrNull()?.bumped(bump) ?: Version.epoch(1)
+    epochCatalogs(published).maxOrNull()?.bumped(bump) ?: Version.epoch(1)

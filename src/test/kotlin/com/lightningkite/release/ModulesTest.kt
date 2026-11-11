@@ -15,25 +15,16 @@ class ModulesTest {
     fun discoversDirectoriesWithAVersionLine() {
         write("gradle.properties", "org.gradle.jvmargs=-Xmx4g\n")
         write("basis/gradle.properties", "group=com.example\nversion=1000.0.0\n")
-        write("database/mongodb/gradle.properties", "group=com.example.db\nversion=1002.3.4-local\n")
+        write("database-mongodb/gradle.properties", "group=com.example.db\nversion=1002.3.4-local\n")
         write("demo/gradle.properties", "kotlin.code.style=official\n")
         write("basis/build/gradle.properties", "group=x\nversion=1.0.0\n")
 
         val modules = discoverModules(root)
 
-        assertEquals(listOf(":basis", ":database:mongodb"), modules.map { it.gradlePath })
-        assertEquals(listOf("com.example:basis", "com.example.db:mongodb"), modules.map { it.coordinate })
+        assertEquals(listOf(":basis", ":database-mongodb"), modules.map { it.gradlePath })
+        assertEquals(listOf("com.example:basis", "com.example.db:database-mongodb"), modules.map { it.coordinate })
         assertEquals(Version(1002, 3, 4), modules[1].written)
-        assertEquals(":database:mongodb:jvmTest", modules[1].task("jvmTest"))
-    }
-
-    @Test
-    fun rootProjectCanBeTheModule() {
-        write("gradle.properties", "group=com.example\nversion=1000.0.0\n")
-        val module = discoverModules(root).single()
-        assertEquals(":", module.gradlePath)
-        assertEquals(root.name, module.artifact)
-        assertEquals(":publishToMavenLocal", module.task("publishToMavenLocal"))
+        assertEquals(":database-mongodb:jvmTest", modules[1].task("jvmTest"))
     }
 
     @Test
