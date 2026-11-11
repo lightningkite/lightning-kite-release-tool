@@ -34,14 +34,6 @@ data class Version(val major: Int, val minor: Int, val patch: Int) : Comparable<
 enum class Bump { Patch, Minor, Major }
 
 /**
- * The version to release.  [written] (the module's `gradle.properties`) is a floor, not an override, so a version
- * left in the file by an interrupted release can't hide a break made afterwards.  A module never released before
- * goes out at the written version.
- */
-fun nextVersion(lastRelease: Version?, written: Version, bump: Bump): Version =
-    if (lastRelease == null) written else maxOf(written, lastRelease.bumped(bump))
-
-/**
  * Whether going from [recorded] to [current] of some dependency is a breaking move: a different major, or a
  * different minor of a `0.x` library.  Versions that don't start with numbers break whenever they differ.
  */

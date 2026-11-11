@@ -1,38 +1,14 @@
 package com.lightningkite.release
 
-import java.io.File
-import kotlin.time.Clock
-import kotlin.time.TimeSource
+/** Added by Kotlin's `abiValidation()` to JVM and Multiplatform modules alike; writes `build/kotlin/abi`. */
+private const val abiDumpTask = "internalDumpKotlinAbi"
 
-/** A mistake by the person running the tool, or a failed build: reported as its message, without a stack trace. */
-class UserError(message: String) : Exception(message)
-
-/** A library repo.  [bucket] is where its releases go; only [inStack] repos are part of the super catalog and BOM. */
-class Repo(val name: String, val directory: File, val bucket: String, val inStack: Boolean) {
-    /** The files that pin upstream catalogs. */
-    val settingsFiles: List<File> get() = listOf("settings.gradle.kts", "buildSrc/settings.gradle.kts").map { directory.resolve(it) }.filter { it.exists() }
-}
-
-class Options(
-    /** A real release to the buckets, instead of `-local` builds in mavenLocal. */
-    val public: Boolean,
-    /** Print what a release would do; leave nothing edited or published. */
-    val plan: Boolean = false,
-    val tests: Boolean = public,
-    /** Repo names, module artifacts, coordinates or Gradle paths to release although unchanged. */
-    val rebuild: Set<String> = setOf(),
-)
-
-/** Where a run publishes, and what differs with it. */
-private enum class Destination(val versionSuffix: String, val publishTasks: List<String>, val catalogTasks: List<String>) {
-    MavenLocal("-local", listOf("publishToMavenLocal"), listOf(":publishCatalogPublicationToMavenLocal")),
-
-    // Also into mavenLocal, so the machine that released can build against the release straight away.
-    Buckets(
-        "",
-        listOf("publishAllPublicationsToStagingRepository", "publishToMavenLocal"),
-        listOf(":publishCatalogPublicationToStagingRepository", ":publishCatalogPublicationToMavenLocal"),
-    ),
+/** The module's ABI dumps as [abiDumpTask] left them, concatenated in path order, each under a `# <path>` header. */
+private fun readAbiDump(module: Module): String {
+    val directory = module.directory.resolve("build/kotlin/abi")
+    val dumps = directory.walkTopDown().filter { it.isFile && it.extension == "api" }.sortedBy { it.relativeTo(directory).invariantSeparatorsPath }.toList()
+    check(dumps.isNotEmpty()) { "${module.gradlePath} has no ABI dump in $directory; is `abiValidation()` on in its build script?" }
+    return dumps.joinToString("") { "# ${it.relativeTo(directory).invariantSeparatorsPath}\n${it.readText()}\n" }
 }
 
 /** A `-local` build of a module in mavenLocal. */
@@ -53,133 +29,132 @@ private class Planned(val state: ModuleState, val decision: Decision?, val publi
 
     /** The version everything else should now use. */
     val version: Version get() = decision?.version ?: checkNotNull(state.last).version
-
-    /** [version] as it is written into files and published. */
-    fun published(destination: Destination): String = if (decision == null) version.toString() else "$version${destination.versionSuffix}"
 }
 
-private class RepoPlan(val repo: Repo, val modules: List<Planned>, val buildLogicHash: String, val localCatalogStale: Boolean) {
-    val toPublish: List<Planned> get() = modules.filter { it.publish }
-    val rootIsModule: Boolean get() = modules.any { it.module.gradlePath == ":" }
-}
-
-/** What a run learns as it walks the repos, so a later repo sees what the earlier ones just released. */
-private class Run(val options: Options, val owner: Map<Coordinate, String>, val buckets: Map<String, MavenRepository>) {
-    val destination = if (options.public) Destination.Buckets else Destination.MavenLocal
-    val current = mutableMapOf<Coordinate, Version>()
-    val records = mutableMapOf<Coordinate, ReleaseRecord>()
-    val publicCatalogs = mutableMapOf<String, List<String>>()
-    val reposWithLocalBuilds = mutableSetOf<String>()
-    val committed = mutableListOf<String>()
-}
-
-private fun catalogDirectory(repo: String) = "${catalogGroup.replace('.', '/')}/$repo-catalog"
-private fun catalogFile(repo: String, version: String) = "${catalogDirectory(repo)}/$version/$repo-catalog-$version.toml"
-private const val stackCatalogDirectory = "com/lightningkite/stack-catalog"
-private fun stackCatalogFile(version: String) = "$stackCatalogDirectory/$version/stack-catalog-$version.toml"
-private const val stackBom: Coordinate = "com.lightningkite:stack-bom"
-
-class Releaser(
-    private val repos: List<Repo>,
-    private val mavenLocal: File,
-    /** Opens a bucket; for writing when the run is a real release. */
-    private val openRepository: (bucket: String, forWriting: Boolean) -> MavenRepository,
-    private val gradle: Gradle,
-    /** The Gradle project that publishes the super catalog and BOM. */
-    private val stackProject: File,
-    private val journal: Journal,
-    private val out: (String) -> Unit = ::println,
+/**
+ * One `lk release` or `lk plan`.  [public] is a real release to the buckets instead of `-local` builds in
+ * mavenLocal.  [rebuild] holds repo names, module artifacts, coordinates or Gradle paths to release although
+ * unchanged.  [planOnly] prints what a release would do and leaves nothing edited or published.
+ */
+class ReleaseRun(
+    private val workspace: Workspace,
+    private val public: Boolean,
+    private val tests: Boolean,
+    private val rebuild: Set<String>,
+    private val planOnly: Boolean,
 ) {
-    fun release(options: Options) {
+    private val mavenLocal = workspace.mavenLocal
+    private val journal = workspace.journal
+
+    // What the run learns as it walks the repos, so a later repo sees what the earlier ones just released.
+    private val buckets = mutableMapOf<String, MavenRepository>()
+    private val current = mutableMapOf<Coordinate, Version>()
+    private val owner = mutableMapOf<Coordinate, String>()
+    private val stackRecords = mutableMapOf<Coordinate, ReleaseRecord>()
+    private val publicCatalogs = mutableMapOf<String, List<String>>()
+    private val reposWithLocalBuilds = mutableSetOf<String>()
+    private val committed = mutableListOf<String>()
+
+    /** The module's version as it is written into files and published. */
+    private fun published(planned: Planned): String = if (planned.decision == null || public) planned.version.toString() else "${planned.version}-local"
+
+    fun release() {
         journal.restore()
-        val converted = repos.map { it to discoverModules(it.directory) }.filter { (_, modules) -> modules.isNotEmpty() }
-        val unknown = options.rebuild.filter { name -> converted.none { (repo, modules) -> repo.name == name || modules.any { it.isNamed(name) } } }
+        lap("restored the journal")
+        val converted = workspace.repos.map { it to discoverModules(it.directory) }.filter { (_, modules) -> modules.isNotEmpty() }
+        lap("found modules")
+        val unknown = rebuild.filter { name -> converted.none { (repo, modules) -> repo.name == name || modules.any { it.isNamed(name) } } }
         if (unknown.isNotEmpty()) throw UserError("--rebuild: there is no repo or module named ${unknown.joinToString()}")
-        val releasing = options.public && !options.plan
+        val releasing = public && !planOnly
         if (releasing) for ((repo, _) in converted) {
             if (exec(repo.directory, "git", "status", "--porcelain").isNotEmpty()) throw UserError("${repo.name}: commit or stash your changes before a public release")
         }
 
         // Opened together and first, so a release that can't write to a later repo's bucket fails before it starts.
-        val buckets = repos.map { it.bucket }.distinct().associateWith { openRepository(it, releasing) }
+        for (bucket in workspace.repos.map { it.bucket }.distinct()) {
+            buckets[bucket] = workspace.open(bucket, forWriting = releasing)
+            lap("opened $bucket")
+        }
         try {
-            val run = Run(options, owner = converted.flatMap { (repo, modules) -> modules.map { it.coordinate to repo.name } }.toMap(), buckets)
             for ((repo, modules) in converted) {
                 try {
-                    val plan = plan(repo, modules, run)
-                    print(plan, run)
-                    for (planned in plan.modules) {
-                        run.current[planned.module.coordinate] = planned.version
-                        planned.state.last?.let { run.records[planned.module.coordinate] = it.record }
+                    val planned = plan(repo, modules)
+                    for (module in planned) {
+                        current[module.module.coordinate] = module.version
+                        owner[module.module.coordinate] = repo.name
+                        if (repo.inStack) module.state.last?.let { stackRecords[module.module.coordinate] = it.record }
                     }
-                    if (!options.public && plan.modules.any { it.decision != null }) run.reposWithLocalBuilds += repo.name
-                    if (!options.plan && (plan.toPublish.isNotEmpty() || plan.localCatalogStale)) execute(plan, run)
+                    if (!public && planned.any { it.decision != null }) reposWithLocalBuilds += repo.name
+                    if (!planOnly && (planned.any { it.publish } || localCatalogStale(repo, planned))) execute(repo, planned)
                 } finally {
                     // Puts back every version line and pin this repo's step edited, unless a release committed them.
                     journal.restore()
                 }
             }
-            if (!options.plan) publishStack(run)
-            if (run.committed.isNotEmpty()) out("Release commits to push: ${run.committed.joinToString()}")
+            if (!planOnly) publishStack()
+            if (committed.isNotEmpty()) println("Release commits to push: ${committed.joinToString()}")
         } finally {
             buckets.values.forEach { it.close() }
+            lap("closed buckets")
         }
     }
 
-    /** Decides what happens to each module of a repo.  Edits pins (journaled) and may run Gradle for ABI dumps. */
-    private fun plan(repo: Repo, modules: List<Module>, run: Run): RepoPlan {
-        val options = run.options
-        val bucket = run.buckets.getValue(repo.bucket)
+    /** Decides what happens to each module of a repo and prints it.  Edits pins (journaled) and may run Gradle for ABI dumps. */
+    private fun plan(repo: Repo, modules: List<Module>): List<Planned> {
+        val bucket = buckets.getValue(repo.bucket)
         val last = lastReleases(bucket, modules)
+        lap("${repo.name}: read the last releases of ${modules.size} modules")
+        val hashes = modules.associateWith { inputsHash(it.directory) }
+        lap("${repo.name}: hashed inputs")
         val states = modules.map { module ->
             val lastRelease = last[module.coordinate]
-            ModuleState(module, lastRelease, inputsHash(module.directory), if (options.public) null else localBuild(module, newerThan = lastRelease?.version))
+            ModuleState(module, lastRelease, hashes.getValue(module), if (public) null else localBuild(module, newerThan = lastRelease?.version))
         }
         val thirdParty = repo.directory.resolve("gradle/libs.versions.toml").takeIf { it.exists() }?.let { Catalog.parse(it.readText()).versions() }.orEmpty()
-        run.publicCatalogs[repo.name] = bucket.read("${catalogDirectory(repo.name)}/maven-metadata.xml")?.let { mavenMetadataVersions(it) }.orEmpty()
+        publicCatalogs[repo.name] = bucket.read("${catalogDirectory(repo.name)}/maven-metadata.xml")?.let { mavenMetadataVersions(it) }.orEmpty()
+        lap("${repo.name}: read local builds and catalog versions")
 
         // A module recorded against an older major of another repo's module must be rebuilt against the new one,
         // which takes that repo's newer catalog.  Moved before anything is built, the ABI dump included, so
         // source already adapted to the new major compiles.
         val upstreamsWithNewMajors = states.flatMap { state ->
             state.last?.record?.dependencies.orEmpty()
-                .filter { (dependency, recorded) -> run.current[dependency]?.let { isMajorMove(recorded.version, it.toString()) } == true }
-                .mapNotNull { (dependency, _) -> run.owner[dependency].takeIf { it != repo.name } }
+                .filter { (dependency, recorded) -> current[dependency]?.let { isMajorMove(recorded.version, it.toString()) } == true }
+                .mapNotNull { (dependency, _) -> owner[dependency] }
         }.toSet()
         for (settings in repo.settingsFiles) {
             val text = settings.readText()
             journal.edit(settings, withPins(text, pins(text).mapValues { (upstream, pinned) ->
-                val published = epochCatalogs(run.publicCatalogs[upstream].orEmpty())
-                val latest = published.maxOrNull()?.toString()
+                val released = epochCatalogs(publicCatalogs[upstream].orEmpty())
+                val latest = released.maxOrNull()?.toString()
                 when {
-                    !options.public && upstream in run.reposWithLocalBuilds -> "local"
-                    latest != null && (Version.parseOrNull(pinned) !in published || upstream in upstreamsWithNewMajors) -> latest
+                    !public && upstream in reposWithLocalBuilds -> "local"
+                    latest != null && (Version.parseOrNull(pinned) !in released || upstream in upstreamsWithNewMajors) -> latest
                     else -> pinned
                 }
             }))
         }
 
         val toDump = states.filter { it.ownInputsChanged && it.locallyDumpedAbi == null }
-        if (toDump.isNotEmpty()) {
-            out("${repo.name}: dumping the ABI of ${toDump.joinToString { it.module.artifact }}")
-            gradle.run(repo.directory, toDump.map { it.module.task(abiDumpTask) })
-        }
+        if (toDump.isNotEmpty()) workspace.gradle(repo.directory, toDump.map { it.module.task(abiDumpTask) })
+        val changed = states.filter { it.ownInputsChanged }
         fun abiPath(state: ModuleState) = "${state.module.mavenPath(checkNotNull(state.last).version.toString())}-abi.txt"
-        val previousAbi = bucket.readAll(states.filter { it.ownInputsChanged }.map { abiPath(it) })
+        val previousAbi = bucket.readAll(changed.map { abiPath(it) })
+        val abiChanges = changed.associate { state ->
+            val previous = checkNotNull(previousAbi.getValue(abiPath(state))) { "${abiPath(state)} is missing" }
+            state.module.coordinate to abiChange(previous, state.locallyDumpedAbi ?: readAbiDump(state.module))
+        }
 
-        fun rebuildRequested(module: Module) = options.rebuild.any { it == repo.name || module.isNamed(it) }
+        if (changed.isNotEmpty()) lap("${repo.name}: compared the ABI of ${changed.size} modules")
+        fun rebuildRequested(module: Module) = rebuild.any { it == repo.name || module.isNamed(it) }
         val siblings = states.associateBy { it.module.coordinate }
         val decisions = mutableMapOf<Coordinate, Decision?>()
         fun currentVersion(dependency: Coordinate): String? {
-            val sibling = siblings[dependency] ?: return run.current[dependency]?.toString() ?: thirdParty[dependency]
+            val sibling = siblings[dependency] ?: return current[dependency]?.toString() ?: thirdParty[dependency]
             if (dependency !in decisions) decisions[dependency] = decide(
                 written = sibling.module.written,
                 lastRelease = sibling.last,
-                inputsHash = sibling.inputsHash,
-                abi = {
-                    val previous = checkNotNull(previousAbi.getValue(abiPath(sibling))) { "${abiPath(sibling)} is missing" }
-                    abiChange(previous, sibling.locallyDumpedAbi ?: readAbiDump(sibling.module))
-                },
+                abi = abiChanges[dependency],
                 // Recursing here is what cascades a major through sibling modules in dependency order.
                 currentVersion = ::currentVersion,
                 rebuild = rebuildRequested(sibling.module),
@@ -197,75 +172,81 @@ class Releaser(
             Planned(state, decision, publish = decision != null && (!alreadyInMavenLocal || rebuildRequested(state.module)))
         }
 
-        // The repo's local catalog is otherwise republished only along with a module, so it can still name a
-        // local build that a public release has since overtaken.
-        val localCatalogStale = !options.public && planned.any { it.decision != null } &&
-            mavenLocal.resolve(catalogFile(repo.name, "local")).takeIf { it.exists() }?.let { Catalog.parse(it.readText()).versions() }.orEmpty()
-                .let { listed -> planned.any { listed[it.module.coordinate] != it.published(run.destination) } }
-        val rootIsModule = modules.any { it.gradlePath == ":" }
-        return RepoPlan(repo, planned, buildLogicHash(repo.directory, rootIsModule), localCatalogStale)
-    }
-
-    private fun print(plan: RepoPlan, run: Run) {
-        for (planned in plan.modules) {
-            val coordinate = planned.module.coordinate
-            val last = planned.state.last
-            val decision = planned.decision
-            out(
+        val buildLogicHash = buildLogicHash(repo.directory)
+        for (module in planned) {
+            val coordinate = module.module.coordinate
+            val lastRelease = module.state.last
+            val decision = module.decision
+            println(
                 when {
-                    decision == null -> "  $coordinate ${planned.version} unchanged"
-                    !planned.publish -> "  $coordinate ${planned.published(run.destination)} already in mavenLocal"
-                    else -> "  $coordinate ${last?.version ?: "(new)"} → ${planned.published(run.destination)}: ${decision.causes.joinToString("; ")}"
+                    decision == null -> "  $coordinate ${module.version} unchanged"
+                    !module.publish -> "  $coordinate ${published(module)} already in mavenLocal"
+                    else -> "  $coordinate ${lastRelease?.version ?: "(new)"} → ${published(module)}: ${decision.causes.joinToString("; ")}"
                 }
             )
-            if (decision == null && last?.record?.buildLogicHash != plan.buildLogicHash) {
-                out("    built with older build logic; `--rebuild ${planned.module.artifact}` releases it anyway")
+            if (decision == null && lastRelease?.record?.buildLogicHash != buildLogicHash) {
+                println("    built with older build logic; `--rebuild ${module.module.artifact}` releases it anyway")
             }
         }
+        return planned
+    }
+
+    /**
+     * The repo's local catalog is otherwise republished only along with a module, so it can still name a local
+     * build that a public release has since overtaken.
+     */
+    private fun localCatalogStale(repo: Repo, planned: List<Planned>): Boolean {
+        if (public || planned.none { it.decision != null }) return false
+        val catalog = mavenLocal.resolve(catalogFile(repo.name, "local"))
+        val listed = if (catalog.exists()) Catalog.parse(catalog.readText()).versions() else mapOf()
+        return planned.any { listed[it.module.coordinate] != published(it) }
     }
 
     /** Builds and publishes what [plan] decided. */
-    private fun execute(plan: RepoPlan, run: Run) {
-        val repo = plan.repo
-        val public = run.options.public
-        val destination = run.destination
-        val toPublish = plan.toPublish
+    private fun execute(repo: Repo, planned: List<Planned>) {
+        val toPublish = planned.filter { it.publish }
 
         // Every decided version, not only the ones being built: the catalog and sibling dependencies name them all.
-        for (planned in plan.modules) if (planned.decision != null) {
-            journal.edit(planned.module.propertiesFile, withVersion(planned.module.propertiesFile.readText(), planned.published(destination)))
+        for (module in planned) if (module.decision != null) {
+            journal.edit(module.module.propertiesFile, withVersion(module.module.propertiesFile.readText(), published(module)))
         }
         val catalogVersion = if (public) {
             val bump = catalogBump(
-                previous = plan.modules.mapNotNull { planned -> planned.state.last?.let { planned.module.coordinate to it.version.toString() } }.toMap(),
-                next = plan.modules.associate { it.module.coordinate to it.version.toString() },
+                previous = planned.mapNotNull { module -> module.state.last?.let { module.module.coordinate to it.version.toString() } }.toMap(),
+                next = planned.associate { it.module.coordinate to it.version.toString() },
             )
-            nextCatalogVersion(run.publicCatalogs.getValue(repo.name), checkNotNull(bump) { "${repo.name} releases modules, yet none of its versions moved" }).toString()
+            nextCatalogVersion(publicCatalogs.getValue(repo.name), checkNotNull(bump) { "${repo.name} releases modules, yet none of its versions moved" }).toString()
         } else "local"
 
         val staging = repo.directory.resolve("build/staging-repo").apply { deleteRecursively() }
-        gradle.run(
-            repo.directory,
-            (if (run.options.tests) toPublish.flatMap { it.module.testTasks() } else listOf()) +
-                toPublish.flatMap { planned -> destination.publishTasks.map { planned.module.task(it) } } +
-                toPublish.map { it.module.task(abiDumpTask) } +
-                destination.catalogTasks +
-                "-PcatalogVersion=$catalogVersion",
-        )
+        workspace.gradle(repo.directory, buildList {
+            // What the rolling deploy before this tool ran: the `test` task of JVM modules.  Kotlin Multiplatform
+            // modules have no task of that name, and their tests (browser, simulator) were never part of a release.
+            if (tests) for (module in toPublish) if (module.module.directory.resolve("src/test").isDirectory) add(module.module.task("test"))
+            for (module in toPublish) {
+                if (public) add(module.module.task("publishAllPublicationsToStagingRepository"))
+                // Also for a public release, so the machine that released can build against it straight away.
+                add(module.module.task("publishToMavenLocal"))
+                add(module.module.task(abiDumpTask))
+            }
+            if (public) add(":publishCatalogPublicationToStagingRepository")
+            add(":publishCatalogPublicationToMavenLocal")
+            add("-PcatalogVersion=$catalogVersion")
+        })
 
         // Hashed again because this release may have moved pins, which are part of the build logic.
-        val releasedLogicHash = buildLogicHash(repo.directory, plan.rootIsModule)
-        val records = toPublish.associateWith { planned ->
+        val buildLogicHash = buildLogicHash(repo.directory)
+        val records = toPublish.associateWith { module ->
             ReleaseRecord(
-                planned.state.inputsHash, releasedLogicHash, gitCommit = null,
-                publishedDependencies(if (public) staging else mavenLocal, planned.module, planned.published(destination)),
+                module.state.inputsHash, buildLogicHash, gitCommit = null,
+                publishedDependencies(if (public) staging else mavenLocal, module.module, published(module)),
             )
         }
-        fun recordFiles(gitCommit: String?) = records.flatMap { (planned, record) ->
-            val path = planned.module.mavenPath(planned.published(destination))
-            listOf("$path-release.properties" to record.copy(gitCommit = gitCommit).render(), "$path-abi.txt" to readAbiDump(planned.module))
+        fun recordFiles(gitCommit: String?) = records.flatMap { (module, record) ->
+            val path = module.module.mavenPath(published(module))
+            listOf("$path-release.properties" to record.copy(gitCommit = gitCommit).render(), "$path-abi.txt" to readAbiDump(module.module))
         }.toMap()
-        val released = toPublish.map { "${it.module.artifact} ${it.published(destination)}" }
+        val released = toPublish.map { "${it.module.artifact} ${published(it)}" }
 
         if (public) {
             // The very first release goes out at the versions already written, so it may edit nothing.
@@ -273,21 +254,22 @@ class Releaser(
                 exec(repo.directory, "git", "add", *journal.edited.map { it.path }.toTypedArray())
                 exec(repo.directory, "git", "commit", "-m", if (released.size <= 3) "Release ${released.joinToString()}" else "Release ${released.size} modules\n\n${released.joinToString("\n")}")
                 journal.keep()
-                run.committed += repo.name
+                committed += repo.name
             }
             val commit = exec(repo.directory, "git", "rev-parse", "HEAD")
-            out("${repo.name}: uploading ${released.size} modules")
-            val bucket = run.buckets.getValue(repo.bucket)
+            println("${repo.name}: uploading ${released.size} modules")
+            val bucket = buckets.getValue(repo.bucket)
             bucket.uploadStaged(staging)
             // Last, so a record only exists for a release whose files are all uploaded.
             bucket.put(recordFiles(commit))
-            run.publicCatalogs[repo.name] = run.publicCatalogs.getValue(repo.name) + catalogVersion
-            out("${repo.name}: released ${released.joinToString()}, and ${repo.name}-catalog $catalogVersion")
+            publicCatalogs[repo.name] = publicCatalogs.getValue(repo.name) + catalogVersion
+            println("${repo.name}: released ${released.joinToString()}, and ${repo.name}-catalog $catalogVersion")
         } else {
             DirectoryMavenRepository(mavenLocal).put(recordFiles(gitCommit = null))
-            out("${repo.name}: published to mavenLocal ${released.joinToString().ifEmpty { "its catalog" }}")
+            println("${repo.name}: published to mavenLocal ${released.joinToString().ifEmpty { "its catalog" }}")
         }
-        for ((planned, record) in records) run.records[planned.module.coordinate] = record
+        if (repo.inStack) for ((module, record) in records) stackRecords[module.module.coordinate] = record
+        lap("${repo.name}: published")
     }
 
     /** Each module's newest release that has a release record, read in as few round trips as possible. */
@@ -327,50 +309,44 @@ class Releaser(
      * nothing in them moved.  Publicly, only when no module still depends on an older major of another: apps must
      * never see a half-finished cascade.
      */
-    private fun publishStack(run: Run) {
-        val public = run.options.public
-        val stackRepos = repos.filter { it.inStack }
-        val bucket = run.buckets.getValue(stackRepos.map { it.bucket }.distinct().single())
+    private fun publishStack() {
+        val stackRepos = workspace.repos.filter { it.inStack }
+        val bucket = buckets.getValue(stackRepos.map { it.bucket }.distinct().single())
 
         val merged = mergeCatalogs(stackRepos.map { repo ->
-            val toml = if (!public && repo.name in run.reposWithLocalBuilds) {
+            val toml = if (!public && repo.name in reposWithLocalBuilds) {
                 mavenLocal.resolve(catalogFile(repo.name, "local")).readText()
             } else {
-                val version = latestCatalog(run.publicCatalogs[repo.name].orEmpty())
-                    ?: return out("stack: ${repo.name} has no released catalog yet, so no stack catalog")
+                val version = latestCatalog(publicCatalogs[repo.name].orEmpty())
+                    ?: return println("stack: ${repo.name} has no released catalog yet, so no stack catalog")
                 checkNotNull(bucket.read(catalogFile(repo.name, version))) { "${catalogFile(repo.name, version)} is missing" }
             }
             Catalog.parse(toml)
         })
         if (public) {
-            val stale = run.records.filterKeys { coordinate -> stackRepos.any { it.name == run.owner[coordinate] } }
-                .filterValues { record -> dependencyCauses(record) { run.current[it]?.toString() }.isNotEmpty() }
-            if (stale.isNotEmpty()) return out("stack: not published; still built against older majors: ${stale.keys.joinToString()}")
+            val stale = stackRecords.filterValues { record -> dependencyCauses(record) { current[it]?.toString() }.isNotEmpty() }
+            if (stale.isNotEmpty()) return println("stack: not published; still built against older majors: ${stale.keys.joinToString()}")
         }
 
         val published = if (public) bucket.read("$stackCatalogDirectory/maven-metadata.xml")?.let { mavenMetadataVersions(it) }.orEmpty() else listOf()
         val previous = if (public) latestCatalog(published)?.let { bucket.read(stackCatalogFile(it)) }
         else mavenLocal.resolve(stackCatalogFile("local")).takeIf { it.exists() }?.readText()
+        lap("stack: read the catalogs")
         // The stack catalog's version follows what moved in it, by the same rules as a module's.
         val bump = catalogBump(previous = previous?.let { Catalog.parse(it).versions() - stackBom }.orEmpty(), next = merged.versions())
-            ?: return out("stack: unchanged")
+            ?: return println("stack: unchanged")
         val version = if (public) nextCatalogVersion(published, bump).toString() else "local"
 
-        val build = stackProject.resolve("build").apply { mkdirs() }
+        val build = workspace.stackProject.resolve("build").apply { mkdirs() }
         // The catalog names its own BOM, so an app has one version to change.
         build.resolve("stack.versions.toml").writeText(merged.copy(libraries = merged.libraries + ("stack-bom" to Catalog.Library(stackBom, version))).toToml())
         build.resolve("stack-bom.txt").writeText(merged.versions().entries.joinToString("\n") { (coordinate, moduleVersion) -> "$coordinate:$moduleVersion" })
         val staging = build.resolve("staging-repo").apply { deleteRecursively() }
-        gradle.run(stackProject, run.destination.publishTasks + "-PstackVersion=$version")
+        // Also for a public release, so the machine that released can build against it straight away.
+        val tasks = if (public) listOf("publishAllPublicationsToStagingRepository", "publishToMavenLocal") else listOf("publishToMavenLocal")
+        workspace.gradle(workspace.stackProject, tasks + "-PstackVersion=$version")
         if (public) bucket.uploadStaged(staging)
-        out("stack: published stack-catalog and stack-bom $version")
+        println("stack: published stack-catalog and stack-bom $version")
+        lap("stack: published")
     }
-}
-
-/** Runs a command, returning what it printed; throws when it fails. */
-fun exec(directory: File, vararg command: String): String {
-    val process = ProcessBuilder(*command).directory(directory).redirectErrorStream(true).start()
-    val output = process.inputStream.bufferedReader().readText().trim()
-    check(process.waitFor() == 0) { "`${command.joinToString(" ")}` failed in $directory:\n$output" }
-    return output
 }

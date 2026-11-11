@@ -92,6 +92,12 @@ fun mergeCatalogs(catalogs: List<Catalog>): Catalog {
 
 const val catalogGroup = "com.lightningkite.stack"
 
+fun catalogDirectory(repo: String) = "${catalogGroup.replace('.', '/')}/$repo-catalog"
+fun catalogFile(repo: String, version: String) = "${catalogDirectory(repo)}/$version/$repo-catalog-$version.toml"
+const val stackCatalogDirectory = "com/lightningkite/stack-catalog"
+fun stackCatalogFile(version: String) = "$stackCatalogDirectory/$version/stack-catalog-$version.toml"
+const val stackBom: Coordinate = "com.lightningkite:stack-bom"
+
 /** An upstream catalog pin in a settings file: `from("com.lightningkite.stack:<repo>-catalog:<version>")`. */
 private val catalogPin = Regex(""""com\.lightningkite\.stack:([\w-]+)-catalog:([^"]+)"""")
 

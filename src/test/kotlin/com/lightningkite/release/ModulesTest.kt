@@ -28,6 +28,15 @@ class ModulesTest {
     }
 
     @Test
+    fun rootProjectCanBeTheModule() {
+        write("gradle.properties", "group=com.example\nversion=1000.0.0\n")
+        val module = discoverModules(root).single()
+        assertEquals(":", module.gradlePath)
+        assertEquals(root.name, module.artifact)
+        assertEquals(":publishToMavenLocal", module.task("publishToMavenLocal"))
+    }
+
+    @Test
     fun versionLineIsReplacedInPlace() = assertEquals(
         "group=com.example\nversion=1000.0.1-local\nother=1\n",
         withVersion("group=com.example\nversion=1000.0.0\nother=1\n", "1000.0.1-local"),
@@ -70,18 +79,16 @@ class ModulesTest {
         write("settings.gradle.kts", "include(\":m\")\n")
         write("build.gradle.kts", "plugins {}\n")
         write("buildSrc/src/main/kotlin/convention.gradle.kts", "// a\n")
-        val original = buildLogicHash(root, rootIsModule = false)
+        val original = buildLogicHash(root)
 
         write("buildSrc/build/generated.txt", "x")
-        assertEquals(original, buildLogicHash(root, rootIsModule = false))
+        assertEquals(original, buildLogicHash(root))
 
         write("buildSrc/src/main/kotlin/convention.gradle.kts", "// b\n")
-        val conventionChanged = buildLogicHash(root, rootIsModule = false)
+        val conventionChanged = buildLogicHash(root)
         assertNotEquals(original, conventionChanged)
 
         write("build.gradle.kts", "plugins { }\n")
-        assertNotEquals(conventionChanged, buildLogicHash(root, rootIsModule = false))
-        // When the root project is the module, its script is that module's own input instead.
-        assertEquals(buildLogicHash(root, rootIsModule = true), run { write("build.gradle.kts", "x"); buildLogicHash(root, rootIsModule = true) })
+        assertNotEquals(conventionChanged, buildLogicHash(root))
     }
 }

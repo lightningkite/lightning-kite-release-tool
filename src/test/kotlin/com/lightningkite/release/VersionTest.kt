@@ -18,17 +18,6 @@ class VersionTest {
     }
 
     @Test
-    fun neverReleasedGoesOutAsWritten() = assertEquals(Version(1000, 0, 0), nextVersion(null, Version(1000, 0, 0), Bump.Patch))
-
-    @Test
-    fun writtenVersionIsAFloor() {
-        assertEquals(Version(7003, 2, 2), nextVersion(last, written = last, Bump.Patch))
-        assertEquals(Version(8000, 0, 0), nextVersion(last, written = Version(8000, 0, 0), Bump.Patch))
-        // An interrupted release left a patch in the file; a break made afterwards still becomes a major.
-        assertEquals(Version(7004, 0, 0), nextVersion(last, written = Version(7003, 2, 2), Bump.Major))
-    }
-
-    @Test
     fun onlyPlainVersionsParse() {
         assertEquals(last, Version.parseOrNull("7003.2.1"))
         assertNull(Version.parseOrNull("7003.2.1-local"))

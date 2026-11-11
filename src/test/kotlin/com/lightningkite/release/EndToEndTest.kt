@@ -1,6 +1,8 @@
 package com.lightningkite.release
 
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.PrintStream
 import java.nio.file.Files
 import java.time.ZonedDateTime
 import kotlin.test.Test
@@ -20,49 +22,39 @@ class EndToEndTest {
     // Gradle runs tests in the project directory.
     private val project = File("").canonicalFile
     private val work: File = Files.createTempDirectory("lk-e2e").toFile().canonicalFile
+    private val tool = work.resolve("tool")
     private val up = work.resolve("up")
     private val down = work.resolve("down")
     private val buckets = work.resolve("buckets")
     private val bucket = buckets.resolve("stack")
     private val mavenLocal = work.resolve("m2")
-    private val journalFile = work.resolve("journal.json")
+    private val journalFile = tool.resolve("build/lk-journal.json")
+    private val workspace = Workspace(
+        home = tool,
+        repos = listOf(Repo("up", up, "s3://stack", inStack = true), Repo("down", down, "s3://stack", inStack = true)),
+        mavenLocal = mavenLocal,
+        rehearsalBuckets = buckets,
+        gradleArguments = listOf("--offline"),
+    )
 
     private fun write(path: String, text: String) = work.resolve(path).apply { parentFile.mkdirs() }.writeText(text.trimIndent() + "\n")
 
+    /** What the last release printed.  Gradle's own output goes straight to the terminal, not here. */
+    private var output = listOf<String>()
     private var gradleRuns = 0
-    private val gradle = Gradle { directory, arguments ->
-        gradleRuns++
-        val log = work.resolve("gradle-$gradleRuns.log")
-        val command = listOf(
-            "./gradlew", "--offline", "-Dmaven.repo.local=$mavenLocal",
-            "--init-script", project.resolve("rehearsal.init.gradle.kts").path, "-Dlk.rehearsalBuckets=$buckets",
-        ) + arguments
-        val exit = ProcessBuilder(command).directory(directory).redirectErrorStream(true).redirectOutput(log).start().waitFor()
-        check(exit == 0) { "Gradle failed in ${directory.name}: $arguments\n${log.readText().takeLast(3000)}" }
-    }
-
-    private var failRecordUploads = false
-    private val output = mutableListOf<String>()
 
     private fun release(public: Boolean, tests: Boolean = public, rebuild: Set<String> = setOf()) {
-        output.clear()
-        Releaser(
-            repos = listOf(Repo("up", up, "s3://stack", inStack = true), Repo("down", down, "s3://stack", inStack = true)),
-            mavenLocal = mavenLocal,
-            openRepository = { name, _ ->
-                val directory = DirectoryMavenRepository(buckets.resolve(name.removePrefix("s3://")))
-                object : MavenRepository by directory {
-                    override fun put(files: Map<String, String>) {
-                        check(!failRecordUploads || files.keys.none { path -> path.endsWith("-release.properties") }) { "upload interrupted" }
-                        directory.put(files)
-                    }
-                }
-            },
-            gradle = gradle,
-            stackProject = work.resolve("stack-catalog"),
-            journal = Journal(journalFile),
-            out = { output += it },
-        ).release(Options(public = public, tests = tests, rebuild = rebuild))
+        val printed = ByteArrayOutputStream()
+        val stdout = System.out
+        System.setOut(PrintStream(printed, true))
+        try {
+            ReleaseRun(workspace, public = public, tests = tests, rebuild = rebuild, planOnly = false).release()
+        } finally {
+            System.setOut(stdout)
+            print(printed)
+            output = printed.toString().lines()
+            gradleRuns += output.count { "./gradlew" in it }
+        }
     }
 
     private fun git(repo: File, vararg arguments: String) = exec(repo, "git", *arguments)
@@ -77,7 +69,7 @@ class EndToEndTest {
     private fun latest(coordinate: String): String? = versions(coordinate).lastOrNull()
     private fun record(root: File, coordinate: String, version: String): ReleaseRecord? {
         val artifact = coordinate.substringAfter(':')
-        return root.resolve("${coordinate.replace('.', '/').replace(':', '/')}/$version/$artifact-$version-release.properties").takeIf { it.exists() }?.let { ReleaseRecord.parse(it.readText()) }
+        return root.resolve("${coordinate.replace('.', '/').replace(':', '/')}/$version/$artifact-$version-release.properties").takeIf { it.isFile }?.let { ReleaseRecord.parse(it.readText()) }
     }
 
     private fun stackCatalog(): Catalog = latest("com.lightningkite:stack-catalog")!!.let { Catalog.parse(bucket.resolve("com/lightningkite/stack-catalog/$it/stack-catalog-$it.toml").readText()) }
@@ -121,12 +113,13 @@ class EndToEndTest {
     """
 
     private fun createRepos() {
-        for (repo in listOf("up", "down", "stack-catalog")) {
+        for (repo in listOf("up", "down", "lightning-kite-stack-catalog")) {
             project.resolve("gradlew").copyTo(work.resolve("$repo/gradlew")).setExecutable(true)
             project.resolve("gradle/wrapper").copyRecursively(work.resolve("$repo/gradle/wrapper"))
         }
-        project.resolve("../lightning-kite-stack-catalog/build.gradle.kts").copyTo(work.resolve("stack-catalog/build.gradle.kts"))
-        project.resolve("../lightning-kite-stack-catalog/settings.gradle.kts").copyTo(work.resolve("stack-catalog/settings.gradle.kts"))
+        project.resolve("../lightning-kite-stack-catalog/build.gradle.kts").copyTo(workspace.stackProject.resolve("build.gradle.kts"))
+        project.resolve("../lightning-kite-stack-catalog/settings.gradle.kts").copyTo(workspace.stackProject.resolve("settings.gradle.kts"))
+        project.resolve("rehearsal.init.gradle.kts").copyTo(tool.resolve("rehearsal.init.gradle.kts"))
 
         write("up/settings.gradle.kts", """
             pluginManagement { repositories { gradlePluginPortal(); mavenCentral() } }
@@ -326,11 +319,12 @@ class EndToEndTest {
         commit(up)
 
         // An upload that dies after the commit heals on the next run: same version, published again.
-        failRecordUploads = true
+        // A directory where the release record goes makes writing the record fail.
+        val recordPath = bucket.resolve("com/example/up/base/1002.0.1/base-1002.0.1-release.properties").apply { mkdirs() }
         assertFails { release(public = true) }
         assertEquals("Release base 1002.0.1", git(up, "log", "-1", "--format=%s"))
         assertNull(record(bucket, "com.example.up:base", "1002.0.1"))
-        failRecordUploads = false
+        recordPath.delete()
         release(public = true)
         assertEquals(1, versions("com.example.up:base").count { it == "1002.0.1" })
         assertEquals(git(up, "rev-parse", "HEAD"), record(bucket, "com.example.up:base", "1002.0.1")!!.gitCommit)

@@ -45,7 +45,8 @@ then release again.
 ## Working on the tool
 
 To rehearse without S3, add `--buckets <directory>` to any command: `s3://<bucket>` becomes `<directory>/<bucket>`.
-`LK_GRADLE_ARGS` adds arguments to every Gradle run the tool starts (`--offline`, for instance).
+`LK_GRADLE_ARGS` adds arguments to every Gradle run the tool starts (`--offline`, for instance).  The `⏱` lines on
+stderr time each step; a run with nothing changed should take a few seconds.
 
 `./gradlew test` runs the tool's tests; the end-to-end one runs real Gradle against two fixture repos and takes a
 few minutes.

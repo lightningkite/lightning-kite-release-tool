@@ -6,6 +6,7 @@ import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider
 import software.amazon.awssdk.core.async.AsyncRequestBody
 import software.amazon.awssdk.core.async.AsyncResponseTransformer
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient
+import software.amazon.awssdk.http.nio.netty.SdkEventLoopGroup
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.s3.S3AsyncClient
 import software.amazon.awssdk.services.s3.model.GetObjectRequest
@@ -20,8 +21,8 @@ import java.time.ZoneOffset
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.CompletionException
+import java.util.concurrent.TimeUnit
 import javax.xml.parsers.DocumentBuilderFactory
-import kotlin.time.measureTime
 
 /** A Maven repository addressed by path, e.g. `com/lightningkite/services/basis/maven-metadata.xml`. */
 interface MavenRepository : AutoCloseable {
@@ -53,11 +54,13 @@ class DirectoryMavenRepository(val root: File) : MavenRepository {
  * access, so `lk plan` and local releases work against the public bucket without a login.
  */
 class S3MavenRepository(private val bucket: String, forWriting: Boolean) : MavenRepository {
+    // Owned here rather than by the client, which would wait a fixed two seconds when shutting down its own.
+    private val eventLoop = SdkEventLoopGroup.builder().build()
     private val client = S3AsyncClient.builder()
         .region(Region.US_WEST_2)
         .credentialsProvider(credentials(forWriting))
         // Thousands of small uploads: allow plenty in flight, and let queued ones wait instead of timing out.
-        .httpClientBuilder(NettyNioAsyncHttpClient.builder().maxConcurrency(64).connectionAcquisitionTimeout(Duration.ofMinutes(30)))
+        .httpClientBuilder(NettyNioAsyncHttpClient.builder().eventLoopGroup(eventLoop).maxConcurrency(64).connectionAcquisitionTimeout(Duration.ofMinutes(30)))
         .build()
 
     private fun credentials(required: Boolean): AwsCredentialsProvider {
@@ -71,13 +74,9 @@ class S3MavenRepository(private val bucket: String, forWriting: Boolean) : Maven
 
     override fun readAll(paths: List<String>): Map<String, String?> = paths
         .associateWith { client.getObject(GetObjectRequest.builder().bucket(bucket).key(it).build(), AsyncResponseTransformer.toBytes()) }
-        .mapValues { (path, request) ->
+        .mapValues { (_, request) ->
             try {
-                var r: String = ""
-//                measureTime {
-                    r = request.join().asUtf8String()
-//                }.also { println("Fetching $path took ${it}") }
-                r
+                request.join().asUtf8String()
             } catch (e: CompletionException) {
                 if (e.cause is NoSuchKeyException) null else throw e
             }
@@ -95,7 +94,10 @@ class S3MavenRepository(private val bucket: String, forWriting: Boolean) : Maven
         files.map { (path, text) -> client.putObject(request(path), AsyncRequestBody.fromString(text)) }.forEach { it.join() }
     }
 
-    override fun close() = client.close()
+    override fun close() {
+        client.close()
+        eventLoop.eventLoopGroup().shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly()
+    }
 }
 
 fun mavenMetadataVersions(xml: String): List<String> {

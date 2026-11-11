@@ -7,10 +7,11 @@ import java.security.MessageDigest
 typealias Coordinate = String
 
 /**
- * A published module: a directory whose `gradle.properties` has a `version` line.  Its artifact is the directory
- * name and its Gradle path follows its directory path.
+ * A published module: the repo's root or a directory directly in it, whose `gradle.properties` has a `version`
+ * line.  Its artifact is named after the directory.
  */
-data class Module(val directory: File, val gradlePath: String, val group: String, val artifact: String, val written: Version) {
+data class Module(val directory: File, val gradlePath: String, val group: String, val written: Version) {
+    val artifact: String get() = directory.name
     val coordinate: Coordinate get() = "$group:$artifact"
     val propertiesFile: File get() = directory.resolve("gradle.properties")
 
@@ -23,17 +24,15 @@ data class Module(val directory: File, val gradlePath: String, val group: String
     /** How `--rebuild` may name it. */
     fun isNamed(name: String): Boolean = name == artifact || name == coordinate || name == gradlePath
 
-    /** `:a:b:task`, or `:task` for a repo whose root project is the module. */
+    /** `:a:task`, or `:task` for a repo whose root project is the module. */
     fun task(name: String): String = if (gradlePath == ":") ":$name" else "$gradlePath:$name"
 }
 
 // Spaces and tabs only around the value: \s would also swallow the line break after it.
 private val versionLine = Regex("""(?m)^version[ \t]*=[ \t]*(\S+)[ \t]*$""")
 private val groupLine = Regex("""(?m)^group[ \t]*=[ \t]*(\S+)[ \t]*$""")
-private val skippedDirectories = setOf("build", "node_modules", "kotlin-js-store", "buildSrc", "src")
 
-fun discoverModules(root: File): List<Module> = root.listFiles()
-    .filter { it.isDirectory }
+fun discoverModules(root: File): List<Module> = (listOf(root) + root.listFiles().filter { it.isDirectory })
     .map { it.resolve("gradle.properties") }
     .filter { it.exists() }
     .mapNotNull { file ->
@@ -42,15 +41,13 @@ fun discoverModules(root: File): List<Module> = root.listFiles()
         val directory = file.parentFile
         Module(
             directory = directory,
-            gradlePath = ":" + directory.relativeTo(root).invariantSeparatorsPath.replace('/', ':'),
+            gradlePath = if (directory == root) ":" else ":${directory.name}",
             group = groupLine.find(text)?.groupValues?.get(1) ?: throw IllegalStateException("$file has a version but no group"),
-            artifact = directory.name,
             // `-local` is what a crashed local run leaves behind until the journal restores it.
             written = Version.parse(version.removeSuffix("-local")),
         )
     }
     .sortedBy { it.gradlePath }
-    .toList()
 
 /** [properties] with its `version` line set to [version]. */
 fun withVersion(properties: String, version: String): String {
@@ -86,15 +83,15 @@ fun inputsHash(module: File): String {
 
 /**
  * The shared build logic.  Not a release input: recorded per release so `lk plan` can report modules built with
- * older logic, which `--rebuild` then releases deliberately.
+ * older logic, which `--rebuild` then releases deliberately.  When the root project is itself the module, its
+ * script is in both hashes, which is harmless: a change to it releases the module, recording the new hash.
  */
-fun buildLogicHash(root: File, rootIsModule: Boolean): String {
+fun buildLogicHash(root: File): String {
     val buildSrc = root.resolve("buildSrc").walkTopDown()
         .onEnter { it.name != "build" && !it.name.startsWith(".") }
         .filter { it.isFile }
         .map { it.relativeTo(root).invariantSeparatorsPath to it.readBytes() }
-    val plain = listOf("settings.gradle.kts", "gradle/wrapper/gradle-wrapper.properties", "gradle/libs.versions.toml")
-        .plus(if (rootIsModule) listOf() else listOf("build.gradle.kts"))
+    val plain = listOf("build.gradle.kts", "settings.gradle.kts", "gradle/wrapper/gradle-wrapper.properties", "gradle/libs.versions.toml")
         .map { root.resolve(it) }.filter { it.exists() }
         .map { it.relativeTo(root).invariantSeparatorsPath to it.readBytes() }
     val properties = root.resolve("gradle.properties").takeIf { it.exists() }?.let { "gradle.properties" to it.withoutVersionLine() }

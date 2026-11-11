@@ -24,9 +24,9 @@ first fix.
 
 - Every published module has its own `gradle.properties` holding `group=…` and `version=…` (a subproject's file
   overrides the root's).  A single-module repo uses the root file.
-- That file is also how the tool finds modules without starting Gradle: a directory whose `gradle.properties` has a
-  `version` line is a published module, its artifact is the directory name, and its Gradle path follows its
-  directory path.  The tool fails loudly when a published artifact isn't where that predicts.
+- That file is also how the tool finds modules without starting Gradle: the repo root, or a directory directly in
+  it, whose `gradle.properties` has a `version` line is a published module, its artifact is the directory name,
+  and its Gradle path is `:` or `:<directory>`.  Nested modules aren't found.  The tool fails loudly when a published artifact isn't where that predicts.
 - The tool is the only thing that edits that line.  A person edits it only to start a new epoch (`8000.0.0`, or
   `lk epoch <repo> 8`) or to declare a break the tool can't see (see "Source breaks").  A written version ahead of
   the last release is released as written.
@@ -66,7 +66,7 @@ Binary-only breaks that happen to recompile cleanly (a new default parameter) st
    by `group:name`.  The same coordinate at two different versions is an error.
 
 Not release inputs: root build scripts, `buildSrc/`, `settings.gradle.kts`, the wrapper, root `gradle.properties`,
-`gradle/libs.versions.toml`.  (When the root project is itself a published module, its `build.gradle.kts` is that
+`gradle/libs.versions.toml`.  (When the root project is itself a published module, its `build.gradle.kts` is also that
 module's input.)  Their combined hash is recorded per release; `lk plan` reports modules built with older build
 logic, and `--rebuild <repo|module>` releases them deliberately.
 

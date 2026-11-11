@@ -3,7 +3,6 @@ package com.lightningkite.release
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
-import kotlin.test.fail
 
 class DecisionTest {
     private val last = Version(1002, 3, 4)
@@ -22,11 +21,10 @@ class DecisionTest {
 
     private fun decide(
         written: Version = last,
-        inputsHash: String = "same",
         abi: AbiChange? = null,
         current: Map<Coordinate, String> = unmoved,
         rebuild: Boolean = false,
-    ) = decide(written, Release(last, record), inputsHash, { abi ?: fail("ABI must not be dumped for unchanged inputs") }, { current[it] }, rebuild)
+    ) = decide(written, Release(last, record), abi, { current[it] }, rebuild)
 
     @Test
     fun unchanged() = assertNull(decide())
@@ -34,14 +32,14 @@ class DecisionTest {
     @Test
     fun neverReleasedGoesOutAsWritten() = assertEquals(
         Version(1000, 0, 0),
-        decide(Version(1000, 0, 0), lastRelease = null, "any", { fail() }, { null }, rebuild = false)?.version,
+        decide(Version(1000, 0, 0), lastRelease = null, abi = null, { null }, rebuild = false)?.version,
     )
 
     @Test
     fun ownChangesBumpByWhatTheAbiDid() {
-        assertEquals(Version(1002, 3, 5), decide(inputsHash = "new", abi = AbiChange.None)?.version)
-        assertEquals(Version(1002, 4, 0), decide(inputsHash = "new", abi = AbiChange.Added)?.version)
-        assertEquals(Version(1003, 0, 0), decide(inputsHash = "new", abi = AbiChange.Broken)?.version)
+        assertEquals(Version(1002, 3, 5), decide(abi = AbiChange.None)?.version)
+        assertEquals(Version(1002, 4, 0), decide(abi = AbiChange.Added)?.version)
+        assertEquals(Version(1003, 0, 0), decide(abi = AbiChange.Broken)?.version)
     }
 
     @Test
@@ -65,7 +63,7 @@ class DecisionTest {
     @Test
     fun theLargestCauseWins() {
         val decision = decide(
-            inputsHash = "new", abi = AbiChange.Added,
+            abi = AbiChange.Added,
             current = unmoved + ("com.lightningkite.services:database" to "1001.0.0") + ("com.lightningkite.services:basis" to "1001.0.0"),
         )!!
         assertEquals(Version(1003, 0, 0), decision.version)
@@ -78,7 +76,9 @@ class DecisionTest {
     @Test
     fun aHandWrittenVersionIsReleasedAsWritten() {
         assertEquals(Version(1003, 0, 0), decide(written = Version(1003, 0, 0))?.version)
-        assertEquals(Version(2000, 0, 0), decide(written = Version(2000, 0, 0), inputsHash = "new", abi = AbiChange.Broken)?.version)
+        assertEquals(Version(2000, 0, 0), decide(written = Version(2000, 0, 0), abi = AbiChange.Broken)?.version)
+        // An interrupted release left a patch in the file; a break made afterwards still becomes a major.
+        assertEquals(Version(1003, 0, 0), decide(written = Version(1002, 3, 5), abi = AbiChange.Broken)?.version)
     }
 
     @Test

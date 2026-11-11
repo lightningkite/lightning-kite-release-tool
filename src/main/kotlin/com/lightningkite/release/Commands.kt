@@ -1,26 +1,18 @@
 package com.lightningkite.release
 
 /** Moves [target]'s upstream catalog pins to the latest released catalogs.  Returns what each settings file now pins. */
-fun pinToLatest(target: Repo, repos: List<Repo>, open: (bucket: String, forWriting: Boolean) -> MavenRepository): Map<String, Map<String, String>> =
+fun pinToLatest(workspace: Workspace, target: Repo): Map<String, Map<String, String>> =
     target.settingsFiles.associate { settings ->
         val text = settings.readText()
         val latest = pins(text).mapValues { (upstream, pinned) ->
-            val upstreamRepo = repos.singleOrNull { it.name == upstream } ?: throw UserError("$settings pins $upstream, which isn't one of the repos")
-            open(upstreamRepo.bucket, false).use { bucket ->
-                latestCatalog(bucket.read("${catalogGroup.replace('.', '/')}/$upstream-catalog/maven-metadata.xml")?.let { mavenMetadataVersions(it) }.orEmpty()) ?: pinned
+            val upstreamRepo = workspace.repos.singleOrNull { it.name == upstream } ?: throw UserError("$settings pins $upstream, which isn't one of the repos")
+            workspace.open(upstreamRepo.bucket, forWriting = false).use { bucket ->
+                latestCatalog(bucket.read("${catalogDirectory(upstream)}/maven-metadata.xml")?.let { mavenMetadataVersions(it) }.orEmpty()) ?: pinned
             }
         }
         settings.writeText(withPins(text, latest))
         settings.relativeTo(target.directory).path to latest
     }
-
-/** Writes `<epoch>000.0.0` into every module of [target]. */
-fun writeEpoch(target: Repo, epoch: Int): List<Module> {
-    val version = Version.epoch(epoch)
-    return discoverModules(target.directory).onEach { module ->
-        module.propertiesFile.writeText(withVersion(module.propertiesFile.readText(), version.toString()))
-    }
-}
 
 /**
  * Uploads the Dokka HTML Gradle generated for [module] to `<group>/<artifact>/<version>/docs`, with a redirect to

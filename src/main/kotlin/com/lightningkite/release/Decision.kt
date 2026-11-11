@@ -56,14 +56,13 @@ fun dependencyCauses(record: ReleaseRecord, currentVersion: (Coordinate) -> Stri
 data class Decision(val version: Version, val causes: List<String>)
 
 /**
- * The module's next release, or null when it is unchanged since [lastRelease].  [abi] is asked only when the
- * module's own inputs changed, because answering it means compiling.
+ * The module's next release, or null when it is unchanged since [lastRelease].  [abi] is null when the module's own
+ * inputs are unchanged.
  */
 fun decide(
     written: Version,
     lastRelease: Release?,
-    inputsHash: String,
-    abi: () -> AbiChange,
+    abi: AbiChange?,
     currentVersion: (Coordinate) -> String?,
     rebuild: Boolean,
 ): Decision? {
@@ -71,19 +70,20 @@ fun decide(
     val last = lastRelease.version
     val record = lastRelease.record
     val causes = buildList {
-        if (inputsHash != record.inputsHash) add(
-            when (abi()) {
-                AbiChange.Broken -> Cause(Bump.Major, "ABI lines removed or changed")
-                AbiChange.Added -> Cause(Bump.Minor, "ABI lines added")
-                AbiChange.None -> Cause(Bump.Patch, "inputs changed, ABI identical")
-            }
-        )
+        when (abi) {
+            AbiChange.Broken -> add(Cause(Bump.Major, "ABI lines removed or changed"))
+            AbiChange.Added -> add(Cause(Bump.Minor, "ABI lines added"))
+            AbiChange.None -> add(Cause(Bump.Patch, "inputs changed, ABI identical"))
+            null -> {}
+        }
         addAll(dependencyCauses(record, currentVersion))
         if (rebuild) add(Cause(Bump.Patch, "--rebuild"))
     }
     val bump = causes.maxOfOrNull { it.bump }
     return when {
-        bump != null -> Decision(nextVersion(last, written, bump), causes.map { it.text })
+        // The written version is a floor, not an override, so a version left in the file by an interrupted release
+        // can't hide a break made afterwards.
+        bump != null -> Decision(maxOf(written, last.bumped(bump)), causes.map { it.text })
         // A person starting an epoch or declaring a source break, or a release that was committed but never uploaded.
         written > last -> Decision(written, listOf("$written is written but not released"))
         else -> null

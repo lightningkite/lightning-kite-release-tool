@@ -9,7 +9,7 @@ import kotlin.test.assertTrue
 
 class CommandsTest {
     private val work: File = Files.createTempDirectory("commands").toFile()
-    private val bucket = DirectoryMavenRepository(work.resolve("bucket"))
+    private val bucket = DirectoryMavenRepository(work.resolve("buckets/stack"))
 
     private fun write(path: String, text: String) = work.resolve(path).apply { parentFile.mkdirs() }.writeText(text)
 
@@ -29,26 +29,14 @@ class CommandsTest {
             create("never") { from("com.lightningkite.stack:never-catalog:unreleased") }
         """.trimIndent())
         val repos = listOf("up", "side", "never", "down").map { Repo(it, work.resolve(it), "s3://stack", inStack = true) }
+        val workspace = Workspace(work, repos, mavenLocal = work.resolve("m2"), rehearsalBuckets = work.resolve("buckets"), gradleArguments = listOf())
 
-        pinToLatest(repos.last(), repos) { _, _ -> bucket }
+        pinToLatest(workspace, workspace.repo("down"))
 
         assertEquals(
             mapOf("up" to "1000.1.0", "side" to "unreleased", "never" to "unreleased"),
             pins(work.resolve("down/settings.gradle.kts").readText()),
         )
-    }
-
-    @Test
-    fun epochRewritesEveryModule() {
-        write("repo/a/gradle.properties", "group=com.example\nversion=1004.2.1\n")
-        write("repo/b/gradle.properties", "group=com.example\nversion=1000.0.0\n")
-        write("repo/gradle.properties", "org.gradle.jvmargs=-Xmx4g\n")
-
-        writeEpoch(Repo("repo", work.resolve("repo"), "s3://stack", inStack = true), 2)
-
-        assertEquals("group=com.example\nversion=2000.0.0\n", work.resolve("repo/a/gradle.properties").readText())
-        assertEquals("group=com.example\nversion=2000.0.0\n", work.resolve("repo/b/gradle.properties").readText())
-        assertEquals("org.gradle.jvmargs=-Xmx4g\n", work.resolve("repo/gradle.properties").readText())
     }
 
     @Test
@@ -60,7 +48,7 @@ class CommandsTest {
 
         val address = uploadDocs(bucket, module)
 
-        val published = work.resolve("bucket/com/example/services/basis")
+        val published = work.resolve("buckets/stack/com/example/services/basis")
         assertEquals("<html>docs</html>", published.resolve("1002.1.0/docs/index.html").readText())
         assertEquals("body {}", published.resolve("1002.1.0/docs/styles/main.css").readText())
         assertEquals("${bucket.url}/com/example/services/basis/1002.1.0/docs/index.html", address)
