@@ -1,0 +1,10 @@
+#!/bin/sh
+# Runs the release tool, rebuilding it first when its sources are newer than the installed build.
+cd "$(dirname "$0")" || exit 1
+bin=build/install/lk/bin/lk
+if [ ! -x "$bin" ] || [ -n "$(find src build.gradle.kts -newer "$bin" -print -quit)" ]; then
+  # LK_GRADLE_ARGS: extra Gradle arguments for every build the tool starts, e.g. --offline.
+  ./gradlew $LK_GRADLE_ARGS -q installDist || exit 1
+  touch "$bin"
+fi
+exec "$bin" "$@"
