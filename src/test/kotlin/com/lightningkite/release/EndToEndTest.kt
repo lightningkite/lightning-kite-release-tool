@@ -204,6 +204,19 @@ class EndToEndTest {
         assertEquals(runsBefore, gradleRuns)
         assertEquals(stackBefore, versions("com.lightningkite:stack-catalog"))
 
+        // Modules released without their catalog, as an older version of this tool did: the catalog goes out alone.
+        bucket.resolve("com/lightningkite/stack/up-catalog/1000.0.0").deleteRecursively()
+        bucket.resolve("com/lightningkite/stack/up-catalog/maven-metadata.xml")
+            .writeText(mergeMavenMetadata(null, "com.lightningkite.stack", "up-catalog", "5.4.1", ZonedDateTime.now()))
+        val upCommit = git(up, "rev-parse", "HEAD")
+        release(public = true)
+        assertEquals(listOf("5.4.1", "1000.0.0"), versions("com.lightningkite.stack:up-catalog"))
+        assertEquals("1000.0.0", Catalog.parse(bucket.resolve("com/lightningkite/stack/up-catalog/1000.0.0/up-catalog-1000.0.0.toml").readText()).versions()["com.example.up:base"])
+        assertEquals(listOf("1000.0.0"), versions("com.example.up:base"))
+        assertEquals(upCommit, git(up, "rev-parse", "HEAD"))
+        assertTrue(output.any { it == "up: released no modules, and up-catalog 1000.0.0" })
+        assertEquals(stackBefore, versions("com.lightningkite:stack-catalog"))
+
         // A change that leaves the ABI alone is a patch of that module only.
         write("up/base/src/main/kotlin/Base.kt", "package up\n\nclass Base {\n    fun a(): Int = 2\n}")
         commit(up)

@@ -85,7 +85,8 @@ class ReleaseRun(
                         if (repo.inStack) module.state.last?.let { stackRecords[module.module.coordinate] = it.record }
                     }
                     if (!public && planned.any { it.decision != null }) reposWithLocalBuilds += repo.name
-                    if (!planOnly && (planned.any { it.publish } || localCatalogStale(repo, planned))) execute(repo, planned)
+                    val catalogMissing = public && latestCatalog(publicCatalogs.getValue(repo.name)) == null
+                    if (!planOnly && (planned.any { it.publish } || localCatalogStale(repo, planned) || catalogMissing)) execute(repo, planned)
                 } finally {
                     // Puts back every version line and pin this repo's step edited, unless a release committed them.
                     journal.restore()
@@ -210,13 +211,19 @@ class ReleaseRun(
         for (module in planned) if (module.decision != null) {
             journal.edit(module.module.propertiesFile, withVersion(module.module.propertiesFile.readText(), published(module)))
         }
-        val catalogVersion = if (public) {
-            val bump = catalogBump(
-                previous = planned.mapNotNull { module -> module.state.last?.let { module.module.coordinate to it.version.toString() } }.toMap(),
-                next = planned.associate { it.module.coordinate to it.version.toString() },
-            )
-            nextCatalogVersion(publicCatalogs.getValue(repo.name), checkNotNull(bump) { "${repo.name} releases modules, yet none of its versions moved" }).toString()
-        } else "local"
+        val catalogs = publicCatalogs.getValue(repo.name)
+        val catalogVersion = when {
+            !public -> "local"
+            // Also when no module moved: an older version of this tool released modules without their catalog.
+            latestCatalog(catalogs) == null -> Version.epoch(1).toString()
+            else -> {
+                val bump = catalogBump(
+                    previous = planned.mapNotNull { module -> module.state.last?.let { module.module.coordinate to it.version.toString() } }.toMap(),
+                    next = planned.associate { it.module.coordinate to it.version.toString() },
+                )
+                nextCatalogVersion(catalogs, checkNotNull(bump) { "${repo.name} releases modules, yet none of its versions moved" }).toString()
+            }
+        }
 
         val staging = repo.directory.resolve("build/staging-repo").apply { deleteRecursively() }
         workspace.gradle(repo.directory, buildList {
@@ -262,8 +269,8 @@ class ReleaseRun(
             bucket.uploadStaged(staging)
             // Last, so a record only exists for a release whose files are all uploaded.
             bucket.put(recordFiles(commit))
-            publicCatalogs[repo.name] = publicCatalogs.getValue(repo.name) + catalogVersion
-            println("${repo.name}: released ${released.joinToString()}, and ${repo.name}-catalog $catalogVersion")
+            publicCatalogs[repo.name] = catalogs + catalogVersion
+            println("${repo.name}: released ${released.joinToString().ifEmpty { "no modules" }}, and ${repo.name}-catalog $catalogVersion")
         } else {
             DirectoryMavenRepository(mavenLocal).put(recordFiles(gitCommit = null))
             println("${repo.name}: published to mavenLocal ${released.joinToString().ifEmpty { "its catalog" }}")
