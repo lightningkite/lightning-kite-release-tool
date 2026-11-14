@@ -151,6 +151,11 @@ releases aren't checked.
 - Release records are written to mavenLocal too, so a module unchanged since its last local publish is skipped.
 - A `-local` build is used only while it is newer than the latest public release, so stale ones drop out by
   themselves.  Gradle orders `X-local` below `X`.
+- A local build made by `--rebuild` stays in use by later runs without the flag, for as long as the module's inputs
+  are the ones it was built from.
+- `X-local` names whatever was built last.  So when a run builds a module again, every local build that was built
+  against that module's `-local` version is built again in the same run, and so on down.  A run that dies in
+  between leaves those stale; `--rebuild` them.
 - Each repo with local builds publishes `<repo>-catalog:local`; downstream repos are built with their pins on it.
   The run ends by publishing `stack-catalog:local` and `stack-bom:local`; the app under test points at those and
   has `mavenLocal()`.

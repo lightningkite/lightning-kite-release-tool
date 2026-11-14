@@ -55,6 +55,7 @@ class ReleaseRun(
     private val stackRecords = mutableMapOf<Coordinate, ReleaseRecord>()
     private val publicCatalogs = mutableMapOf<String, List<String>>()
     private val reposWithLocalBuilds = mutableSetOf<String>()
+    private val rebuiltLocally = mutableSetOf<Coordinate>()
     private val committed = mutableListOf<String>()
 
     /** The module's version as it is written into files and published. */
@@ -87,6 +88,7 @@ class ReleaseRun(
                         if (repo.inStack) module.state.last?.let { stackRecords[module.module.coordinate] = it.record }
                     }
                     if (!public && planned.any { it.decision != null }) reposWithLocalBuilds += repo.name
+                    if (!public) rebuiltLocally += planned.filter { it.publish }.map { it.module.coordinate }
                     val catalogMissing = public && latestCatalog(publicCatalogs.getValue(repo.name)) == null
                     if (!planOnly && (planned.any { it.publish } || localCatalogStale(repo, planned) || catalogMissing)) execute(repo, planned)
                 } finally {
@@ -154,26 +156,39 @@ class ReleaseRun(
         val decisions = mutableMapOf<Coordinate, Decision?>()
         fun currentVersion(dependency: Coordinate): String? {
             val sibling = siblings[dependency] ?: return current[dependency]?.toString() ?: thirdParty[dependency]
-            if (dependency !in decisions) decisions[dependency] = decide(
-                written = sibling.module.written,
-                lastRelease = sibling.last,
-                abi = abiChanges[dependency],
-                // Recursing here is what cascades a major through sibling modules in dependency order.
-                currentVersion = ::currentVersion,
-                rebuild = rebuildRequested(sibling.module),
-            )
+            if (dependency !in decisions) {
+                // An earlier `--rebuild` left a local build of these very inputs.  It stays in use, or the next run
+                // without the flag would point the catalog back at the public version.
+                val keptLocalBuild = sibling.localBuild?.takeIf { it.record.inputsHash == sibling.inputsHash }
+                decisions[dependency] = decide(
+                    written = sibling.module.written,
+                    lastRelease = sibling.last,
+                    abi = abiChanges[dependency],
+                    // Recursing here is what cascades a major through sibling modules in dependency order.
+                    currentVersion = ::currentVersion,
+                    rebuild = rebuildRequested(sibling.module),
+                ) ?: keptLocalBuild?.let { Decision(it.version, listOf("--rebuild in an earlier run")) }
+            }
             return (decisions[dependency]?.version ?: checkNotNull(sibling.last).version).toString()
         }
         states.forEach { currentVersion(it.module.coordinate) }
 
-        val planned = states.map { state ->
+        val publishing = mutableMapOf<Coordinate, Boolean>()
+        fun publishes(state: ModuleState): Boolean = publishing[state.module.coordinate] ?: run {
             val decision = decisions[state.module.coordinate]
             val local = state.localBuild
             // In local mode, a build of these inputs at this version, against these dependency majors, may already be there.
             val alreadyInMavenLocal = decision != null && local != null && local.version == decision.version &&
                 local.record.inputsHash == state.inputsHash && dependencyCauses(local.record, ::currentVersion).isEmpty()
-            Planned(state, decision, publish = decision != null && (!alreadyInMavenLocal || rebuildRequested(state.module)))
+            // `X-local` names whatever was built last, so a build against one this run replaces is stale.
+            val builtAgainstReplaced = local != null && local.record.dependencies.any { (dependency, recorded) ->
+                recorded.version.endsWith("-local") && (dependency in rebuiltLocally || siblings[dependency]?.let { publishes(it) } == true)
+            }
+            val publish = decision != null && (!alreadyInMavenLocal || builtAgainstReplaced || rebuildRequested(state.module))
+            publishing[state.module.coordinate] = publish
+            publish
         }
+        val planned = states.map { Planned(it, decisions[it.module.coordinate], publish = publishes(it)) }
 
         val buildLogicHash = buildLogicHash(repo.directory)
         for (module in planned) {

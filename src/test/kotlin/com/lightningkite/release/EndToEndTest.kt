@@ -358,6 +358,25 @@ class EndToEndTest {
         // --rebuild releases an unchanged module as a patch; --dropTargets says the target is gone on purpose.
         release(public = true, rebuild = setOf("solo"), dropTargets = true)
         assertTrue(mavenLocal.resolve("com/example/down/solo/1000.0.1/solo-1000.0.1.jar").isFile)
+
+        // A local --rebuild stays in use by later plain runs: the catalog keeps naming it and nothing is built again.
+        fun localDownCatalog() = Catalog.parse(mavenLocal.resolve("com/lightningkite/stack/down-catalog/local/down-catalog-local.toml").readText()).versions()
+        release(public = false, rebuild = setOf("solo"))
+        assertEquals("1000.0.2-local", localDownCatalog()["com.example.down:solo"])
+        val runsBeforePlain = gradleRuns
+        release(public = false)
+        assertEquals("1000.0.2-local", localDownCatalog()["com.example.down:solo"])
+        assertEquals("1000.0.2-local", Catalog.parse(mavenLocal.resolve("com/lightningkite/stack-catalog/local/stack-catalog-local.toml").readText()).versions()["com.example.down:solo"])
+        assertEquals(runsBeforePlain, gradleRuns)
+
+        // `X-local` names whatever was built last, so a local build is built again when one it was built against is.
+        write("up/base/src/main/kotlin/Base.kt", "package up\n\nclass Base {\n    fun renamed(): Int = 7\n    fun b(): Int = 3\n}")
+        release(public = false, rebuild = setOf("app"))
+        assertEquals("1002.0.2-local", record(mavenLocal, "com.example.down:app", "1002.0.1-local")!!.dependencies.getValue("com.example.up:base").version)
+        write("up/base/src/main/kotlin/Base.kt", "package up\n\nclass Base {\n    fun renamed(): Int = 8\n    fun b(): Int = 3\n}")
+        release(public = false)
+        assertTrue(output.any { it.startsWith("down: published to mavenLocal app ") }, "app was built against the base this run replaced")
+        assertFalse(output.any { it.startsWith("down: published to mavenLocal") && "solo" in it }, "solo doesn't depend on it")
         assertEquals("1000.0.1", latest("com.example.down:solo"))
     }
 }
