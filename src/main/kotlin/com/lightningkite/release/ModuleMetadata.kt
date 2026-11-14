@@ -37,6 +37,15 @@ private class ModuleMetadata(val variants: List<Variant> = listOf()) {
 
 private val json = Json { ignoreUnknownKeys = true }
 
+/**
+ * The artifacts a Kotlin Multiplatform root module's metadata sends each target to, such as `client-iosarm64`.
+ * Empty for a plain JVM module, which is its own only target.
+ */
+fun publishedTargets(rootModuleMetadata: String): Set<String> =
+    json.decodeFromString<ModuleMetadata>(rootModuleMetadata).variants.mapNotNull { it.availableAt?.url }
+        // `../../client-iosarm64/1000.0.0/client-iosarm64-1000.0.0.module`
+        .map { it.split('/').dropLast(2).last() }.toSet()
+
 /** One target's dependencies.  [runtime] is null for native targets, which publish no runtime variant. */
 private class TargetDependencies(val api: Map<Coordinate, String>, val runtime: Map<Coordinate, String>?)
 

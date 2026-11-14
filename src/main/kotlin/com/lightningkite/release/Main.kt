@@ -34,14 +34,15 @@ private fun names(commaSeparated: String): Set<String> = commaSeparated.split(',
 
 @Description("Prints what a release would do, module by module, and why.  Leaves nothing edited or published.")
 fun plan(public: Boolean = false, rebuild: String = "", buckets: File? = null) =
-    ReleaseRun(workspace(buckets), public = public, tests = false, rebuild = names(rebuild), planOnly = true).release()
+    ReleaseRun(workspace(buckets), public = public, tests = false, rebuild = names(rebuild), dropTargets = false, planOnly = true).release()
 
 @Description(
     "Publishes changed modules: into mavenLocal as <next>-local, or with --public for real (tests, upload, a commit; never a push).  " +
-        "--rebuild <repos or modules, comma-separated> releases them although unchanged.  --tests false skips the tests of a public release."
+        "--rebuild <repos or modules, comma-separated> releases them although unchanged.  --tests false skips the tests of a public release.  " +
+        "--dropTargets lets a public release go out without a Kotlin Multiplatform target its last release had."
 )
-fun release(public: Boolean = false, tests: Boolean = public, rebuild: String = "", buckets: File? = null) =
-    ReleaseRun(workspace(buckets), public = public, tests = tests, rebuild = names(rebuild), planOnly = false).release()
+fun release(public: Boolean = false, tests: Boolean = public, rebuild: String = "", dropTargets: Boolean = false, buckets: File? = null) =
+    ReleaseRun(workspace(buckets), public = public, tests = tests, rebuild = names(rebuild), dropTargets = dropTargets, planOnly = false).release()
 
 @Description("Moves a repo's upstream catalog pins to the latest released catalogs.")
 fun pin(repo: String, buckets: File? = null) {

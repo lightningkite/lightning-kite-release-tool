@@ -16,6 +16,7 @@ checked out next to this project too.
 | `./lk release` | Changed modules into mavenLocal as `<next>-local`, plus `stack-catalog:local` and `stack-bom:local`.  Point an app's catalog version at `local` to try them. |
 | `./lk release --public` | The real release: tests, uploads, commits the version and pin changes.  Never pushes.  The same versions also land in your mavenLocal. |
 | `./lk release --rebuild <repos or modules>` | Releases something unchanged, e.g. after a build-logic change or a third-party version change within the same major.  Several names are comma-separated. |
+| `./lk release --public --dropTargets` | Releases although a module would go out without a Kotlin Multiplatform target its last release had.  Only for a target removed on purpose. |
 | `./lk pin <repo>`, `./lk epoch <repo> <n>`, `./lk docs <repo>` | Move pins to the latest catalogs; start a new epoch; upload Dokka. |
 
 `./lk` alone lists the commands; `./lk <command> --help` shows one.
@@ -32,6 +33,9 @@ checked out next to this project too.
    `settings.gradle.kts`.
 
 A module that was never released goes out at the version written in its `gradle.properties`.
+
+Release from a Mac.  Elsewhere the iOS targets of some modules can't be built, and the tool stops rather than
+release a module without a target its last release had.
 
 ## Rules worth knowing
 

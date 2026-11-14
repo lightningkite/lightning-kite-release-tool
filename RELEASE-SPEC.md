@@ -98,6 +98,7 @@ Run as `./lk`.  No Gradle starts until a module is known to have changed.
 | `lk release` | **Local, the default.**  Publishes changed modules to mavenLocal as `<next>-local`. |
 | `lk release --public` | The real release to LK Maven. |
 | `--rebuild <repo\|module>[,…]` | Adds a patch release for modules that are otherwise unchanged.  A name that matches nothing is an error. |
+| `--dropTargets` | Lets a public release go out without a target its last release had (see "Lost targets"). |
 | `--tests [true\|false]` | Public releases run the released modules' tests by default; local ones don't. |
 | `lk docs <repo>` | Generates and uploads the repo's Dokka output. |
 | `lk epoch <repo> <n>` | Writes `<n>000.0.0` into every module of a repo. |
@@ -119,7 +120,8 @@ lightning-server-kiteui, lightning-bot (own bucket, outside the stack catalog).
    cascade.
 4. Write the new versions into the modules' `gradle.properties`.
 5. `--public`: run Gradle once to test and publish exactly those modules, plus the repo catalog, into
-   `build/staging-repo` (and into mavenLocal, so the releasing machine can build against them at once); commit ("Release <module> <version>, …", including any pin move); upload artifacts;
+   `build/staging-repo`; stop if a target was lost (below); run Gradle again to publish the same into mavenLocal,
+   so the releasing machine can build against them at once; commit ("Release <module> <version>, …", including any pin move); upload artifacts;
    merge each `maven-metadata.xml`; upload the release records.  The tool does not push.
 6. Local: run Gradle once with `publishToMavenLocal` for exactly those modules and the catalog; write the release
    records into mavenLocal; restore the version lines and pins.
@@ -131,6 +133,15 @@ A real break usually means a downstream repo no longer compiles, so the run stop
 released.  That is safe: the super catalog and BOM are published only at the end of a run in which every module's
 recorded dependency majors match the latest releases, so apps never see a half-finished cascade.  Fix the
 downstream source (developing against both repos in the metawork composite build) and rerun.
+
+### Lost targets
+
+A Kotlin Multiplatform module is published as one artifact per target.  A target the releasing machine can't build
+(iOS with cinterop, off a Mac) is left out without an error, its ABI lines vanish, and the release would go out as a
+major that no app using that target can resolve.  So a public release compares each staged module's targets (the
+`available-at` entries of its root `.module`) with those of its last release, and stops before committing, uploading
+or publishing to mavenLocal when one is missing.  `--dropTargets` is for a target removed on purpose.  Local
+releases aren't checked.
 
 ### Local mode
 

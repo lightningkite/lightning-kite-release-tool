@@ -43,12 +43,12 @@ class EndToEndTest {
     private var output = listOf<String>()
     private var gradleRuns = 0
 
-    private fun release(public: Boolean, tests: Boolean = public, rebuild: Set<String> = setOf()) {
+    private fun release(public: Boolean, tests: Boolean = public, rebuild: Set<String> = setOf(), dropTargets: Boolean = false) {
         val printed = ByteArrayOutputStream()
         val stdout = System.out
         System.setOut(PrintStream(printed, true))
         try {
-            ReleaseRun(workspace, public = public, tests = tests, rebuild = rebuild, planOnly = false).release()
+            ReleaseRun(workspace, public = public, tests = tests, rebuild = rebuild, dropTargets = dropTargets, planOnly = false).release()
         } finally {
             System.setOut(stdout)
             print(printed)
@@ -343,8 +343,21 @@ class EndToEndTest {
         assertEquals(git(up, "rev-parse", "HEAD"), record(bucket, "com.example.up:base", "1002.0.1")!!.gitCommit)
         assertEquals("Release base 1002.0.1", git(up, "log", "-1", "--format=%s"), "no second commit")
 
-        // --rebuild releases an unchanged module as a patch.
-        release(public = true, rebuild = setOf("solo"))
+        // A build without a target the last release had (iOS, off a Mac) is refused with nothing committed,
+        // uploaded or left in mavenLocal.  Here the last release is made to look as if it had one.
+        bucket.resolve("com/example/down/solo/1000.0.0/solo-1000.0.0.module").writeText(
+            """{"variants":[{"name":"iosArm64ApiElements-published","available-at":{"url":"../../solo-iosarm64/1000.0.0/solo-iosarm64-1000.0.0.module"}}]}"""
+        )
+        val refused = assertFailsWith<UserError> { release(public = true, rebuild = setOf("solo")) }
+        assertTrue("com.example.down:solo 1000.0.1 has no solo-iosarm64, which 1000.0.0 had" in refused.message!!, refused.message)
+        assertEquals(listOf("1000.0.0"), versions("com.example.down:solo"))
+        assertFalse(mavenLocal.resolve("com/example/down/solo/1000.0.1").exists())
+        assertTrue(git(down, "status", "--porcelain").isEmpty())
+        assertFalse(journalFile.exists())
+
+        // --rebuild releases an unchanged module as a patch; --dropTargets says the target is gone on purpose.
+        release(public = true, rebuild = setOf("solo"), dropTargets = true)
+        assertTrue(mavenLocal.resolve("com/example/down/solo/1000.0.1/solo-1000.0.1.jar").isFile)
         assertEquals("1000.0.1", latest("com.example.down:solo"))
     }
 }

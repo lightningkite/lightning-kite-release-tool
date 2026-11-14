@@ -81,6 +81,8 @@ class ModuleMetadataTest {
                 variant("kotlin-metadata", dependency("org.jetbrains.kotlinx:atomicfu", "0.29.0")),
             ),
         )
+        assertEquals(setOf("kmp-jvm", "kmp-js", "kmp-iosarm64"), publishedTargets(repository.resolve("com/example/kmp/1.0.0-local/kmp-1.0.0-local.module").readText()))
+        assertEquals(setOf(), publishedTargets(metadata(variant("java-api"))), "a plain JVM module is its own only target")
         val module = Module(repository.resolve("kmp"), ":kmp", "com.example", Version(1, 0, 0))
         assertEquals(
             mapOf(

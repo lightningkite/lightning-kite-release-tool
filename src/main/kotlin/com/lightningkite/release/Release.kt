@@ -34,13 +34,15 @@ private class Planned(val state: ModuleState, val decision: Decision?, val publi
 /**
  * One `lk release` or `lk plan`.  [public] is a real release to the buckets instead of `-local` builds in
  * mavenLocal.  [rebuild] holds repo names, module artifacts, coordinates or Gradle paths to release although
- * unchanged.  [planOnly] prints what a release would do and leaves nothing edited or published.
+ * unchanged.  [dropTargets] lets a public release go out without a target its last release had.  [planOnly] prints
+ * what a release would do and leaves nothing edited or published.
  */
 class ReleaseRun(
     private val workspace: Workspace,
     private val public: Boolean,
     private val tests: Boolean,
     private val rebuild: Set<String>,
+    private val dropTargets: Boolean,
     private val planOnly: Boolean,
 ) {
     private val mavenLocal = workspace.mavenLocal
@@ -231,15 +233,36 @@ class ReleaseRun(
             // modules have no task of that name, and their tests (browser, simulator) were never part of a release.
             if (tests) for (module in toPublish) if (module.module.directory.resolve("src/test").isDirectory) add(module.module.task("test"))
             for (module in toPublish) {
-                if (public) add(module.module.task("publishAllPublicationsToStagingRepository"))
-                // Also for a public release, so the machine that released can build against it straight away.
-                add(module.module.task("publishToMavenLocal"))
+                add(module.module.task(if (public) "publishAllPublicationsToStagingRepository" else "publishToMavenLocal"))
                 add(module.module.task(abiDumpTask))
             }
-            if (public) add(":publishCatalogPublicationToStagingRepository")
-            add(":publishCatalogPublicationToMavenLocal")
+            add(if (public) ":publishCatalogPublicationToStagingRepository" else ":publishCatalogPublicationToMavenLocal")
             add("-PcatalogVersion=$catalogVersion")
         })
+
+        if (public) {
+            // A target that can't be built here (iOS off a Mac) is silently left out of the publication, and apps
+            // that use it then can't resolve the module at all.
+            if (!dropTargets) {
+                val released = toPublish.filter { it.state.last != null }
+                fun lastMetadata(module: Planned) = "${module.module.mavenPath(checkNotNull(module.state.last).version.toString())}.module"
+                val before = buckets.getValue(repo.bucket).readAll(released.map { lastMetadata(it) })
+                val lost = released.mapNotNull { module ->
+                    val previous = checkNotNull(before.getValue(lastMetadata(module))) { "${lastMetadata(module)} is missing" }
+                    val staged = staging.resolve("${module.module.mavenPath(published(module))}.module").readText()
+                    val missing = publishedTargets(previous) - publishedTargets(staged)
+                    if (missing.isEmpty()) null
+                    else "  ${module.module.coordinate} ${published(module)} has no ${missing.sorted().joinToString()}, which ${checkNotNull(module.state.last).version} had"
+                }
+                if (lost.isNotEmpty()) throw UserError(
+                    "${repo.name}: not released, because this build lacks targets the last release had:\n${lost.joinToString("\n")}\n" +
+                        "Release from a machine that builds them (iOS needs a Mac).  If they were removed on purpose, add --dropTargets."
+                )
+            }
+            // So the machine that released can build against it straight away.  Only after the check: builds here
+            // resolve mavenLocal first, so a refused release left there would shadow the real one for good.
+            workspace.gradle(repo.directory, toPublish.map { it.module.task("publishToMavenLocal") } + ":publishCatalogPublicationToMavenLocal" + "-PcatalogVersion=$catalogVersion")
+        }
 
         // Hashed again because this release may have moved pins, which are part of the build logic.
         val buildLogicHash = buildLogicHash(repo.directory)
