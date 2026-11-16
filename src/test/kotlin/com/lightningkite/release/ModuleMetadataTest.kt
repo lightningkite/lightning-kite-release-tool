@@ -37,7 +37,7 @@ class ModuleMetadataTest {
                 variant("java-api", dependency("org.jetbrains.kotlin:kotlin-test", "2.4.21"), extra = ""","capabilities":[{"group":"com.example","name":"lib-test-fixtures","version":"1000.0.0"}]"""),
             ),
         )
-        val module = Module(repository.resolve("lib"), ":lib", "com.example", Version(1000, 0, 0))
+        val module = Module(repository.resolve("lib"), ":lib", "com.example", Version(1000, 0, 0), emptySet())
         assertEquals(
             mapOf(
                 "com.example:base" to Dependency("1000.0.0", Scope.Api),
@@ -83,7 +83,7 @@ class ModuleMetadataTest {
         )
         assertEquals(setOf("kmp-jvm", "kmp-js", "kmp-iosarm64"), publishedTargets(repository.resolve("com/example/kmp/1.0.0-local/kmp-1.0.0-local.module").readText()))
         assertEquals(setOf(), publishedTargets(metadata(variant("java-api"))), "a plain JVM module is its own only target")
-        val module = Module(repository.resolve("kmp"), ":kmp", "com.example", Version(1, 0, 0))
+        val module = Module(repository.resolve("kmp"), ":kmp", "com.example", Version(1, 0, 0), emptySet())
         assertEquals(
             mapOf(
                 "org.jetbrains.kotlinx:kotlinx-coroutines-core" to Dependency("1.11.0", Scope.Api),

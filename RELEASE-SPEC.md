@@ -51,6 +51,23 @@ A dependency's minor or patch never rebuilds its dependents; apps receive those 
 The same rules apply to sibling modules, modules in other repos, and third-party libraries, except that a minor of
 a `0.x` third-party library counts as a major.
 
+### Comparing dumps
+
+A line counts together with its dump file and its enclosing declaration, so `public fun toString ()...` removed
+from one class or one target is a break even while another class or target still has it.  A changed class header
+counts as a break.
+
+### Experimental code
+
+- Declarations behind a repo's opt-in experimental or internal annotations are left out of the dump by the root
+  script's `abiValidation { filters { exclude.annotatedWith... } }`, so changing them isn't a major.
+- A whole target or module is declared experimental in the module's `gradle.properties`:
+  `lk.experimentalTargets=jvmSsr` (comma-separated dump directory names) or `lk.experimentalTargets=*` (the whole
+  module).  Those dumps are still uploaded, but left out of both sides of the comparison, so marking or unmarking a
+  target is never itself a break.  Targets in the shared `.klib.api` file (`js`, `ios...`) have no dump of their
+  own and can't be named; the tool refuses a name without a dump directory.
+- Nothing stops a user of an experimental target from depending on it: a break there ships as a patch.
+
 ### Source breaks
 
 The ABI dump sees binary breaks.  It cannot see a source-only break (a new sealed subclass, a new abstract member,
@@ -188,7 +205,7 @@ The catalog gives names; the BOM is what lifts transitive modules to the latest 
 - Per published module: `gradle.properties` with `group=` and `version=`, and in its script only what differs
   (its POM description).
 - Root script, once, for every module that applies `com.vanniktech.maven.publish`: POM, signing, Dokka setup,
-  Kotlin `abiValidation()` with `checkKotlinAbi` disabled, and the repository
+  Kotlin `abiValidation()` excluding the repo's experimental/internal annotations, with `checkKotlinAbi` disabled, and the repository
   `maven { name = "staging"; url = uri(rootProject.layout.buildDirectory.dir("staging-repo")) }`.
 - Root script: the `version-catalog` block listing the publishing subprojects, published as publication `catalog`.
 - `settings.gradle.kts`: each upstream's catalog imported at a pinned version
@@ -222,7 +239,6 @@ The tool never pushes.  After a public run it lists the repos it committed to an
 
 ## Later, not built
 
-- Excluding declarations behind an opt-in "unstable" annotation from the ABI dump, so experimental churn isn't a major.
 - Detecting some source-only breaks from added ABI lines (new sealed subclass, new abstract member).
 - Running Kotlin Multiplatform tests as part of a release.
 - CI, remote build cache.

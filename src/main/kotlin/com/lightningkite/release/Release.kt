@@ -147,7 +147,7 @@ class ReleaseRun(
         val previousAbi = bucket.readAll(changed.map { abiPath(it) })
         val abiChanges = changed.associate { state ->
             val previous = checkNotNull(previousAbi.getValue(abiPath(state))) { "${abiPath(state)} is missing" }
-            state.module.coordinate to abiChange(previous, state.locallyDumpedAbi ?: readAbiDump(state.module))
+            state.module.coordinate to abiChange(previous, state.locallyDumpedAbi ?: readAbiDump(state.module), state.module.experimentalTargets)
         }
 
         if (changed.isNotEmpty()) lap("${repo.name}: compared the ABI of ${changed.size} modules")

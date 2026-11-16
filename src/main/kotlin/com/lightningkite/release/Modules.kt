@@ -10,7 +10,7 @@ typealias Coordinate = String
  * A published module: the repo's root or a directory directly in it, whose `gradle.properties` has a `version`
  * line.  Its artifact is named after the directory.
  */
-data class Module(val directory: File, val gradlePath: String, val group: String, val written: Version) {
+data class Module(val directory: File, val gradlePath: String, val group: String, val written: Version, val experimentalTargets: Set<String>) {
     val artifact: String get() = directory.name
     val coordinate: Coordinate get() = "$group:$artifact"
     val propertiesFile: File get() = directory.resolve("gradle.properties")
@@ -31,6 +31,7 @@ data class Module(val directory: File, val gradlePath: String, val group: String
 // Spaces and tabs only around the value: \s would also swallow the line break after it.
 private val versionLine = Regex("""(?m)^version[ \t]*=[ \t]*(\S+)[ \t]*$""")
 private val groupLine = Regex("""(?m)^group[ \t]*=[ \t]*(\S+)[ \t]*$""")
+private val experimentalTargetsLine = Regex("""(?m)^lk\.experimentalTargets[ \t]*=[ \t]*(\S+)[ \t]*$""")
 
 fun discoverModules(root: File): List<Module> = (listOf(root) + root.listFiles().filter { it.isDirectory })
     .map { it.resolve("gradle.properties") }
@@ -45,6 +46,7 @@ fun discoverModules(root: File): List<Module> = (listOf(root) + root.listFiles()
             group = groupLine.find(text)?.groupValues?.get(1) ?: throw IllegalStateException("$file has a version but no group"),
             // `-local` is what a crashed local run leaves behind until the journal restores it.
             written = Version.parse(version.removeSuffix("-local")),
+            experimentalTargets = experimentalTargetsLine.find(text)?.groupValues?.get(1)?.split(',')?.toSet().orEmpty(),
         )
     }
     .sortedBy { it.gradlePath }

@@ -28,6 +28,15 @@ class ModulesTest {
     }
 
     @Test
+    fun experimentalTargetsAreReadFromTheModulesProperties() {
+        write("library/gradle.properties", "group=com.example\nversion=1000.0.0\nlk.experimentalTargets=jvmSsr,android\n")
+        write("plain/gradle.properties", "group=com.example\nversion=1000.0.0\n")
+        val (library, plain) = discoverModules(root)
+        assertEquals(setOf("jvmSsr", "android"), library.experimentalTargets)
+        assertEquals(emptySet(), plain.experimentalTargets)
+    }
+
+    @Test
     fun rootProjectCanBeTheModule() {
         write("gradle.properties", "group=com.example\nversion=1000.0.0\n")
         val module = discoverModules(root).single()

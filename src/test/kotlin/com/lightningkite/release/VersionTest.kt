@@ -2,6 +2,7 @@ package com.lightningkite.release
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -39,9 +40,43 @@ class VersionTest {
     @Test
     fun abiChanges() {
         val abi = "class A {\n  fun a()\n}\n"
-        assertEquals(AbiChange.None, abiChange(abi, abi + "\n"))
-        assertEquals(AbiChange.Added, abiChange(abi, "class A {\n  fun a()\n  fun b()\n}\n"))
-        assertEquals(AbiChange.Broken, abiChange(abi, "class A {\n  fun a(Int)\n}\n"))
-        assertEquals(AbiChange.Broken, abiChange(abi, "class A {\n}\n"))
+        assertEquals(AbiChange.None, abiChange(abi, abi + "\n", emptySet()))
+        assertEquals(AbiChange.Added, abiChange(abi, "class A {\n  fun a()\n  fun b()\n}\n", emptySet()))
+        assertEquals(AbiChange.Broken, abiChange(abi, "class A {\n  fun a(Int)\n}\n", emptySet()))
+        assertEquals(AbiChange.Broken, abiChange(abi, "class A {\n}\n", emptySet()))
+    }
+
+    @Test
+    fun aLineRemovedFromOneClassBreaksThoughAnotherHasIt() = assertEquals(
+        AbiChange.Broken,
+        abiChange("class A {\n  fun a()\n}\nclass B {\n  fun a()\n}\n", "class A {\n  fun a()\n}\nclass B {\n}\n", emptySet()),
+    )
+
+    private fun dump(jvmSsr: String, android: String) =
+        "# android/library.api\nclass A {\n$android}\n\n# jvmSsr/library.api\nclass A {\n$jvmSsr}\n\n# library.klib.api\nfinal fun k()\n"
+
+    @Test
+    fun aLineRemovedFromOneTargetBreaksThoughAnotherHasIt() = assertEquals(
+        AbiChange.Broken,
+        abiChange(dump(jvmSsr = "  fun a()\n", android = "  fun a()\n"), dump(jvmSsr = "", android = "  fun a()\n"), emptySet()),
+    )
+
+    @Test
+    fun experimentalTargetsAreNotCompared() {
+        val both = dump(jvmSsr = "  fun a()\n", android = "  fun a()\n")
+        assertEquals(AbiChange.None, abiChange(both, dump(jvmSsr = "", android = "  fun a()\n"), setOf("jvmSsr")))
+        assertEquals(AbiChange.None, abiChange(both, dump(jvmSsr = "  fun a()\n  fun b()\n", android = "  fun a()\n"), setOf("jvmSsr")))
+        assertEquals(AbiChange.Broken, abiChange(both, dump(jvmSsr = "  fun a()\n", android = ""), setOf("jvmSsr")))
+    }
+
+    @Test
+    fun starLeavesOutTheWholeModule() =
+        assertEquals(AbiChange.None, abiChange("# library-compose.api\nclass A {\n  fun a()\n}\n", "# library-compose.api\nclass A {\n}\n", setOf("*")))
+
+    @Test
+    fun anExperimentalTargetWithoutItsOwnDumpIsRefused() {
+        val both = dump(jvmSsr = "  fun a()\n", android = "  fun a()\n")
+        assertFailsWith<UserError> { abiChange(both, both, setOf("jvmSrr")) }
+        assertFailsWith<UserError> { abiChange(both, both, setOf("js")) }
     }
 }

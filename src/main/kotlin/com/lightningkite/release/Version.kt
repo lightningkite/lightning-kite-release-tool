@@ -48,13 +48,40 @@ fun isMajorMove(recorded: String, current: String): Boolean {
 
 enum class AbiChange { None, Added, Broken }
 
-/** Lines removed or changed break code compiled against them; lines only added don't. */
-fun abiChange(previous: String, current: String): AbiChange {
-    val previousLines = previous.lines().filter { it.isNotBlank() }.toSet()
-    val currentLines = current.lines().filter { it.isNotBlank() }.toSet()
+/**
+ * Lines removed or changed break code compiled against them; lines only added don't.  Dumps are as `readAbiDump`
+ * joins them: each file under a `# <path>` header, whose first directory is its target (`jvmSsr/library.api`).
+ * [experimentalTargets] are left out of both sides; `*` leaves out the whole module.
+ */
+fun abiChange(previous: String, current: String, experimentalTargets: Set<String>): AbiChange {
+    val currentTargets = current.lines().filter { it.startsWith("# ") && '/' in it }.map { it.removePrefix("# ").substringBefore('/') }.toSet()
+    val unknown = experimentalTargets - "*" - currentTargets
+    if (unknown.isNotEmpty()) {
+        val existing = currentTargets.joinToString().ifEmpty { "none" }
+        throw UserError("lk.experimentalTargets=${experimentalTargets.joinToString(",")}: ${unknown.joinToString()} has no ABI dump of its own (targets with one: $existing)")
+    }
+
+    // A member line like `public fun toString ()Ljava/lang/String;` repeats across classes and targets, so a line
+    // only counts together with its file and enclosing declaration.
+    fun keys(dump: String): Set<String> = buildSet {
+        var path = ""
+        var declaration = ""
+        for (line in dump.lines()) {
+            when {
+                line.startsWith("# ") -> { path = line.removePrefix("# "); declaration = "" }
+                "*" in experimentalTargets || path.substringBefore('/', missingDelimiterValue = "") in experimentalTargets -> {}
+                line.isBlank() -> {}
+                line == "}" -> declaration = ""
+                !line[0].isWhitespace() && line.endsWith("{") -> { declaration = line; add("$path\n$line") }
+                else -> add("$path\n$declaration\n$line")
+            }
+        }
+    }
+    val previousKeys = keys(previous)
+    val currentKeys = keys(current)
     return when {
-        !currentLines.containsAll(previousLines) -> AbiChange.Broken
-        currentLines.size > previousLines.size -> AbiChange.Added
+        !currentKeys.containsAll(previousKeys) -> AbiChange.Broken
+        currentKeys.size > previousKeys.size -> AbiChange.Added
         else -> AbiChange.None
     }
 }
