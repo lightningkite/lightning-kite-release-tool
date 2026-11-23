@@ -27,11 +27,13 @@ class EndToEndTest {
     private val down = work.resolve("down")
     private val buckets = work.resolve("buckets")
     private val bucket = buckets.resolve("stack")
+    private val downBucket = buckets.resolve("down")
     private val mavenLocal = work.resolve("m2")
     private val journalFile = tool.resolve("build/lk-journal.json")
     private val workspace = Workspace(
         home = tool,
-        repos = listOf(Repo("up", up, "s3://stack", inStack = true), Repo("down", down, "s3://stack", inStack = true)),
+        repos = listOf(Repo("up", up, "s3://stack"), Repo("down", down, "s3://down")),
+        stackBucket = "s3://stack",
         mavenLocal = mavenLocal,
         rehearsalBuckets = buckets,
         gradleArguments = listOf("--offline"),
@@ -39,16 +41,16 @@ class EndToEndTest {
 
     private fun write(path: String, text: String) = work.resolve(path).apply { parentFile.mkdirs() }.writeText(text.trimIndent() + "\n")
 
-    /** What the last release printed.  Gradle's own output goes straight to the terminal, not here. */
+    /** What the last release printed.  Gradle's own output goes to `build/lk-output/gradle.log`, not here. */
     private var output = listOf<String>()
     private var gradleRuns = 0
 
-    private fun release(public: Boolean, tests: Boolean = public, rebuild: Set<String> = setOf(), dropTargets: Boolean = false) {
+    private fun release(public: Boolean, tests: Boolean = public, rebuild: Set<String> = setOf(), only: Set<String> = setOf(), dropTargets: Boolean = false) {
         val printed = ByteArrayOutputStream()
         val stdout = System.out
         System.setOut(PrintStream(printed, true))
         try {
-            ReleaseRun(workspace, public = public, tests = tests, rebuild = rebuild, dropTargets = dropTargets, planOnly = false).release()
+            ReleaseRun(workspace, public = public, tests = tests, rebuild = rebuild, only = only, dropTargets = dropTargets, planOnly = false).release()
         } finally {
             System.setOut(stdout)
             print(printed)
@@ -63,10 +65,10 @@ class EndToEndTest {
         git(repo, "commit", "-q", "-m", "change")
     }
 
-    private fun versions(coordinate: String): List<String> =
-        bucket.resolve("${coordinate.replace('.', '/').replace(':', '/')}/maven-metadata.xml").takeIf { it.exists() }?.let { mavenMetadataVersions(it.readText()) }.orEmpty()
+    private fun versions(coordinate: String, root: File = bucket): List<String> =
+        root.resolve("${coordinate.replace('.', '/').replace(':', '/')}/maven-metadata.xml").takeIf { it.exists() }?.let { mavenMetadataVersions(it.readText()) }.orEmpty()
 
-    private fun latest(coordinate: String): String? = versions(coordinate).lastOrNull()
+    private fun latest(coordinate: String, root: File = bucket): String? = versions(coordinate, root).lastOrNull()
     private fun record(root: File, coordinate: String, version: String): ReleaseRecord? {
         val artifact = coordinate.substringAfter(':')
         return root.resolve("${coordinate.replace('.', '/').replace(':', '/')}/$version/$artifact-$version-release.properties").takeIf { it.isFile }?.let { ReleaseRecord.parse(it.readText()) }
@@ -183,10 +185,11 @@ class EndToEndTest {
 
         // The first release: everything goes out at the written version.
         release(public = true)
-        for (module in listOf("up:base", "up:util", "up:impl", "down:app", "down:solo")) assertEquals(listOf("1000.0.0"), versions("com.example.$module"), module)
+        for (module in listOf("up:base", "up:util", "up:impl")) assertEquals(listOf("1000.0.0"), versions("com.example.$module"), module)
+        for (module in listOf("down:app", "down:solo")) assertEquals(listOf("1000.0.0"), versions("com.example.$module", downBucket), module)
         assertEquals(Dependency("1000.0.0", Scope.Api), record(bucket, "com.example.up:util", "1000.0.0")!!.dependencies["com.example.up:base"])
         assertEquals(Dependency("1000.0.0", Scope.Implementation), record(bucket, "com.example.up:impl", "1000.0.0")!!.dependencies["com.example.up:base"])
-        assertEquals(Dependency("1000.0.0", Scope.Api), record(bucket, "com.example.down:app", "1000.0.0")!!.dependencies["com.example.up:base"])
+        assertEquals(Dependency("1000.0.0", Scope.Api), record(downBucket, "com.example.down:app", "1000.0.0")!!.dependencies["com.example.up:base"])
         assertEquals("1000.0.0", latest("com.lightningkite.stack:up-catalog"))
         assertEquals("1000.0.0", pin(), "the pin on a catalog from before the tool moved to its first release")
         assertTrue(mavenLocal.resolve("com/example/up/base/1000.0.0/base-1000.0.0.jar").isFile, "a public release is in mavenLocal too")
@@ -195,6 +198,8 @@ class EndToEndTest {
         assertEquals(Catalog.Library("com.example.up:base", "1000.0.0"), stackCatalog().libraries["up-base"])
         assertEquals(Catalog.Library("com.lightningkite:stack-bom", latest("com.lightningkite:stack-catalog")), stackCatalog().libraries["stack-bom"])
         assertTrue(bucket.resolve("com/lightningkite/stack-bom/${latest("com.lightningkite:stack-catalog")}").isDirectory)
+        // `down` is in a bucket of its own; the stack catalog reads its catalog from there.
+        assertEquals(Catalog.Library("com.example.down:app", "1000.0.0"), stackCatalog().libraries["down-app"])
         assertTrue(git(up, "status", "--porcelain").isEmpty() && git(down, "status", "--porcelain").isEmpty())
 
         // Nothing changed: no Gradle at all.
@@ -222,7 +227,8 @@ class EndToEndTest {
         commit(up)
         release(public = true)
         assertEquals("1000.0.1", latest("com.example.up:base"))
-        for (module in listOf("up:util", "up:impl", "down:app", "down:solo")) assertEquals(listOf("1000.0.0"), versions("com.example.$module"), module)
+        for (module in listOf("up:util", "up:impl")) assertEquals(listOf("1000.0.0"), versions("com.example.$module"), module)
+        for (module in listOf("down:app", "down:solo")) assertEquals(listOf("1000.0.0"), versions("com.example.$module", downBucket), module)
         assertEquals("version=1000.0.1", up.resolve("base/gradle.properties").readLines().last())
         assertEquals("Release base 1000.0.1", git(up, "log", "-1", "--format=%s"))
         assertEquals("1000.0.1", stackCatalog().versions()["com.example.up:base"])
@@ -244,17 +250,20 @@ class EndToEndTest {
         commit(up)
         val pinBefore = pin()
         release(public = true)
+        val abiDiff = tool.resolve("build/lk-output/abi/com.example.up/base.diff")
+        assertTrue(output.any { it == "    removed or changed in Base; added in Base: $abiDiff" }, output.joinToString("\n"))
+        assertTrue("- \tpublic final fun a ()I" in abiDiff.readText(), abiDiff.readText())
         assertEquals("1001.0.0", latest("com.example.up:base"))
         assertEquals("1001.0.0", latest("com.example.up:util"))
         assertEquals("1000.0.1", latest("com.example.up:impl"))
-        assertEquals("1001.0.0", latest("com.example.down:app"))
-        assertEquals(listOf("1000.0.0"), versions("com.example.down:solo"))
+        assertEquals("1001.0.0", latest("com.example.down:app", downBucket))
+        assertEquals(listOf("1000.0.0"), versions("com.example.down:solo", downBucket))
         assertEquals("1000.0.0", pinBefore, "upstream patches and minors never moved the pin")
         assertEquals("1001.0.0", latest("com.lightningkite.stack:up-catalog"))
         assertEquals("1001.0.0", pin())
-        assertEquals("1001.0.0", latest("com.lightningkite.stack:down-catalog"))
+        assertEquals("1001.0.0", latest("com.lightningkite.stack:down-catalog", downBucket))
         assertEquals("1001.0.0", latest("com.lightningkite:stack-catalog"))
-        assertEquals(Dependency("1001.0.0", Scope.Api), record(bucket, "com.example.down:app", "1001.0.0")!!.dependencies["com.example.up:base"])
+        assertEquals(Dependency("1001.0.0", Scope.Api), record(downBucket, "com.example.down:app", "1001.0.0")!!.dependencies["com.example.up:base"])
         assertEquals("1001.0.0", stackCatalog().versions()["com.example.down:app"])
 
         // A break the downstream repo doesn't compile against stops the run there, with no stack catalog published.
@@ -264,7 +273,7 @@ class EndToEndTest {
         val stackBeforeBreak = versions("com.lightningkite:stack-catalog")
         assertFails { release(public = true) }
         assertEquals("1002.0.0", latest("com.example.up:base"))
-        assertEquals("1001.0.0", latest("com.example.down:app"))
+        assertEquals("1001.0.0", latest("com.example.down:app", downBucket))
         assertEquals(stackBeforeBreak, versions("com.lightningkite:stack-catalog"))
         assertTrue(git(down, "status", "--porcelain").isEmpty(), "the failed build's version and pin edits were undone")
         assertFalse(journalFile.exists())
@@ -272,7 +281,7 @@ class EndToEndTest {
         write("down/app/src/main/kotlin/App.kt", "package down\n\nclass App {\n    fun n(): Int = up.Base().renamed()\n}")
         commit(down)
         release(public = true)
-        assertEquals("1002.0.0", latest("com.example.down:app"))
+        assertEquals("1002.0.0", latest("com.example.down:app", downBucket))
         assertEquals(stackBeforeBreak.size + 1, versions("com.lightningkite:stack-catalog").size)
 
         // A failing test aborts a public release before anything is committed or uploaded.
@@ -296,7 +305,12 @@ class EndToEndTest {
 
         // A local release: `<next>-local` in mavenLocal, nothing committed, the bucket untouched.
         write("up/base/src/main/kotlin/Base.kt", "package up\n\nclass Base {\n    fun renamed(): Int = 5\n    fun b(): Int = 3\n}")
+        // A higher `-local` left from before a version reset is removed, or later runs would compare against it.
+        val beforeReset = mavenLocal.resolve("com/example/up/base/1003.0.0-local").apply { mkdirs() }
+        beforeReset.resolve("base-1003.0.0-local-release.properties").writeText("inputsHash = old\nbuildLogicHash = old\n")
+        beforeReset.resolve("base-1003.0.0-local-abi.txt").writeText("")
         release(public = false)
+        assertFalse(beforeReset.exists())
         val firstLocal = record(mavenLocal, "com.example.up:base", "1002.0.1-local")!!
         assertEquals("1002.0.0", latest("com.example.up:base"))
         assertEquals("M base/src/main/kotlin/Base.kt", git(up, "status", "--porcelain"))
@@ -306,6 +320,7 @@ class EndToEndTest {
         val runsBeforeRepeat = gradleRuns
         release(public = false)
         assertEquals(runsBeforeRepeat, gradleRuns)
+        assertEquals(listOf("Nothing to release.", ""), output, "nothing about unchanged modules")
         // More changes of the same level republish the same version.
         write("up/base/src/main/kotlin/Base.kt", "package up\n\nclass Base {\n    fun renamed(): Int = 6\n    fun b(): Int = 3\n}")
         release(public = false)
@@ -345,12 +360,12 @@ class EndToEndTest {
 
         // A build without a target the last release had (iOS, off a Mac) is refused with nothing committed,
         // uploaded or left in mavenLocal.  Here the last release is made to look as if it had one.
-        bucket.resolve("com/example/down/solo/1000.0.0/solo-1000.0.0.module").writeText(
+        downBucket.resolve("com/example/down/solo/1000.0.0/solo-1000.0.0.module").writeText(
             """{"variants":[{"name":"iosArm64ApiElements-published","available-at":{"url":"../../solo-iosarm64/1000.0.0/solo-iosarm64-1000.0.0.module"}}]}"""
         )
         val refused = assertFailsWith<UserError> { release(public = true, rebuild = setOf("solo")) }
         assertTrue("com.example.down:solo 1000.0.1 has no solo-iosarm64, which 1000.0.0 had" in refused.message!!, refused.message)
-        assertEquals(listOf("1000.0.0"), versions("com.example.down:solo"))
+        assertEquals(listOf("1000.0.0"), versions("com.example.down:solo", downBucket))
         assertFalse(mavenLocal.resolve("com/example/down/solo/1000.0.1").exists())
         assertTrue(git(down, "status", "--porcelain").isEmpty())
         assertFalse(journalFile.exists())
@@ -377,6 +392,29 @@ class EndToEndTest {
         release(public = false)
         assertTrue(output.any { it.startsWith("down: published to mavenLocal app ") }, "app was built against the base this run replaced")
         assertFalse(output.any { it.startsWith("down: published to mavenLocal") && "solo" in it }, "solo doesn't depend on it")
-        assertEquals("1000.0.1", latest("com.example.down:solo"))
+        assertEquals("1000.0.1", latest("com.example.down:solo", downBucket))
+
+        // --only releases just the named repos, although another is dirty, and leaves the stack catalog to a full run.
+        commit(up)
+        val scratch = down.resolve("app/src/main/kotlin/Scratch.kt").apply { writeText("package down\n") }
+        val baseBeforeOnly = versions("com.example.up:base")
+        val stackBeforeOnly = versions("com.lightningkite:stack-catalog")
+        val downCommitBeforeOnly = git(down, "rev-parse", "HEAD")
+        release(public = true, only = setOf("up"))
+        assertEquals(baseBeforeOnly.size + 1, versions("com.example.up:base").size)
+        assertEquals(stackBeforeOnly, versions("com.lightningkite:stack-catalog"))
+        assertTrue(output.any { it.startsWith("stack: not published with --only") }, output.joinToString("\n"))
+        assertEquals(downCommitBeforeOnly, git(down, "rev-parse", "HEAD"))
+        scratch.delete()
+
+        // A repo can't go out ahead of an earlier one with changes to release, which it may build on.
+        write("up/base/src/main/kotlin/Base.kt", "package up\n\nclass Base {\n    fun renamed(): Int = 9\n    fun b(): Int = 3\n}")
+        commit(up)
+        val baseBeforeRefusal = versions("com.example.up:base")
+        val ahead = assertFailsWith<UserError> { release(public = true, only = setOf("down")) }
+        assertEquals("--only: up has changes to release first; add it to --only", ahead.message)
+        assertEquals(baseBeforeRefusal, versions("com.example.up:base"))
+        assertTrue(git(down, "status", "--porcelain").isEmpty())
+        assertFailsWith<UserError> { release(public = true, only = setOf("dwon")) }
     }
 }

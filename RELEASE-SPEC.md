@@ -1,7 +1,7 @@
 # Releasing the Lightning Kite libraries
 
-How the six library repos (service-abstractions, lightning-server, reactive, kiteui, lightning-server-kiteui,
-lightning-bot) are versioned and released.  The tool is `./lk`; its source is `src/`.  For what to type,
+How the nine library repos (kotliner-cli, kotlinx-serialization-csv-durable, service-abstractions, lightning-server,
+reactive, kiteui, lightning-server-kiteui, lightning-bot, human-relay) are versioned and released.  The tool is `./lk`; its source is `src/`.  For what to type,
 see the README.
 
 Goal: a release costs time only for the modules that really changed.  An unchanged module starts no Gradle, builds
@@ -110,11 +110,12 @@ Run as `./lk`.  No Gradle starts until a module is known to have changed.
 
 | Command | Does |
 |---|---|
-| `lk plan [--public]` | Prints every module: unchanged, or old → new version and why.  Leaves no file edited; runs the ABI dump for changed modules, since the bump depends on it. |
+| `lk plan [--public]` | Prints each module that would be published: old → new version and why, and for a changed ABI the declarations it touches and a diff file.  Also lists modules built with older build logic.  Leaves no file edited; runs the ABI dump for changed modules, since the bump depends on it. |
 | `lk pin <repo>` | Moves a repo's upstream pins to the latest catalogs, for developing against a new upstream minor. |
 | `lk release` | **Local, the default.**  Publishes changed modules to mavenLocal as `<next>-local`. |
 | `lk release --public` | The real release to LK Maven. |
 | `--rebuild <repo\|module>[,…]` | Adds a patch release for modules that are otherwise unchanged.  A name that matches nothing is an error. |
+| `--only <repo>[,…]` | Releases only those repos; only they must be clean.  Repos after the last are not walked.  An earlier repo with changes to release stops the run, since the named repos may build on it.  No stack catalog: the repos not walked may still be built against an older major of what went out, which only a full run checks. |
 | `--dropTargets` | Lets a public release go out without a target its last release had (see "Lost targets"). |
 | `--tests [true\|false]` | Public releases run the released modules' tests by default; local ones don't. |
 | `lk docs <repo>` | Generates and uploads the repo's Dokka output. |
@@ -123,8 +124,8 @@ Run as `./lk`.  No Gradle starts until a module is known to have changed.
 
 `LK_GRADLE_ARGS` holds extra arguments for every Gradle run the tool starts (for example `--offline`).
 
-Repos are walked in dependency order: service-abstractions, lightning-server, reactive, kiteui,
-lightning-server-kiteui, lightning-bot (own bucket, outside the stack catalog).
+Repos are walked in dependency order: kotliner-cli, kotlinx-serialization-csv-durable, service-abstractions, lightning-server,
+reactive, kiteui, lightning-server-kiteui, lightning-bot (own bucket), human-relay.
 
 ### Per repo
 
@@ -147,7 +148,7 @@ Failure handling: a failed build restores the files and stops the run.  A failed
 rerun: the committed versions are the floor, and each module without a release record is published again.
 
 A real break usually means a downstream repo no longer compiles, so the run stops there with the upstream already
-released.  That is safe: the super catalog and BOM are published only at the end of a run in which every module's
+released.  That is safe: the stack catalog and BOM are published only at the end of a run in which every module's
 recorded dependency majors match the latest releases, so apps never see a half-finished cascade.  Fix the
 downstream source (developing against both repos in the metawork composite build) and rerun.
 
@@ -167,7 +168,8 @@ releases aren't checked.
   the same `X-local`, unless the accumulated changes raise the level (a patch becoming a minor or a major).
 - Release records are written to mavenLocal too, so a module unchanged since its last local publish is skipped.
 - A `-local` build is used only while it is newer than the latest public release, so stale ones drop out by
-  themselves.  Gradle orders `X-local` below `X`.
+  themselves.  Gradle orders `X-local` below `X`.  Publishing `X-local` deletes the module's higher `-local`
+  builds: only a version reset leaves those, and the newest-wins rule would otherwise pick them.
 - A local build made by `--rebuild` stays in use by later runs without the flag, for as long as the module's inputs
   are the ones it was built from.
 - `X-local` names whatever was built last.  So when a run builds a module again, every local build that was built
@@ -189,14 +191,14 @@ releases aren't checked.
   a module added or moved to a new minor is a minor, anything else a patch.  The first is `1000.0.0`; catalogs below epoch 1 were
   published before this tool and are ignored.
 - **Third-party versions** stay in each repo's own `gradle/libs.versions.toml`.
-- **Super catalog and BOM** `com.lightningkite:stack-catalog` / `stack-bom`: the tool merges the latest per-repo
-  catalogs of the five stack repos and publishes both through `../lightning-kite-stack-catalog`, a small plain Gradle project
-  (`version-catalog` and `java-platform` plugins).  Libraries are named `<last part of group>-<artifact>`
-  (`services-basis`, `lightningserver-core`, `kiteui-library`); the catalog also names its own BOM as `stack-bom`,
-  so an app has one version to change.  Their shared version follows the same aggregate rule over every module in
-  the stack, and nothing is published when no version moved.
-- lightning-bot publishes `com.lightningkite.stack:lightning-bot-catalog` to its own bucket; an app that uses it
-  imports that catalog separately.
+- **Stack catalog and BOM** `com.lightningkite:stack-catalog` / `stack-bom`, in `lightningkite-maven`: the tool
+  merges the latest per-repo catalogs of every repo (each read from its repo's bucket) and publishes both through
+  `../lightning-kite-stack-catalog`, a small plain Gradle project (`version-catalog` and `java-platform` plugins).
+  Libraries are named `<last part of group>-<artifact>` (`services-basis`, `lightningserver-core`,
+  `lightningbot-ai`, `lightningkite-kotliner-cli`); the catalog also names its own BOM as `stack-bom`, so an app has
+  one version to change.  Their shared version follows the same aggregate rule over every module, and nothing is
+  published when no version moved.  lightning-bot's modules are in `lightning-bot-maven`, so an app using them also
+  lists that repository.
 
 The catalog gives names; the BOM is what lifts transitive modules to the latest minor and patch in apps.
 

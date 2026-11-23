@@ -16,33 +16,37 @@ private fun workspace(rehearsalBuckets: File?): Workspace {
     return Workspace(
         home = home,
         repos = listOf(
-            Repo("service-abstractions", home.resolve("../service-abstractions").normalize(), stackBucket, inStack = true),
-            Repo("lightning-server", home.resolve("../lightning-server").normalize(), stackBucket, inStack = true),
-            Repo("reactive", home.resolve("../reactive").normalize(), stackBucket, inStack = true),
-            Repo("kiteui", home.resolve("../kiteui").normalize(), stackBucket, inStack = true),
-            Repo("lightning-server-kiteui", home.resolve("../lightning-server-kiteui").normalize(), stackBucket, inStack = true),
-            Repo("lightning-bot", home.resolve("../lightning-bot").normalize(), "s3://lightning-bot-maven", inStack = false),
+            Repo("kotliner-cli", home.resolve("../kotliner-cli").normalize(), stackBucket),
+            Repo("kotlinx-serialization-csv-durable", home.resolve("../kotlinx-serialization-csv-durable").normalize(), stackBucket),
+            Repo("service-abstractions", home.resolve("../service-abstractions").normalize(), stackBucket),
+            Repo("lightning-server", home.resolve("../lightning-server").normalize(), stackBucket),
+            Repo("reactive", home.resolve("../reactive").normalize(), stackBucket),
+            Repo("kiteui", home.resolve("../kiteui").normalize(), stackBucket),
+            Repo("lightning-server-kiteui", home.resolve("../lightning-server-kiteui").normalize(), stackBucket),
+            Repo("lightning-bot", home.resolve("../lightning-bot").normalize(), "s3://lightning-bot-maven"),
+            Repo("human-relay", home.resolve("../human-relay").normalize(), stackBucket),
         ),
+        stackBucket = stackBucket,
         mavenLocal = File(System.getProperty("user.home"), ".m2/repository"),
         rehearsalBuckets = rehearsalBuckets?.absoluteFile,
         gradleArguments = System.getenv("LK_GRADLE_ARGS")?.split(' ')?.filter { it.isNotBlank() }.orEmpty(),
     )
 }
 
-// kotliner-cli can't take a list of names, so --rebuild is one comma-separated argument.
+// kotliner-cli can't take a list of names, so --rebuild and --only are each one comma-separated argument.
 private fun names(commaSeparated: String): Set<String> = commaSeparated.split(',').filter { it.isNotBlank() }.toSet()
 
 @Description("Prints what a release would do, module by module, and why.  Leaves nothing edited or published.")
-fun plan(public: Boolean = false, rebuild: String = "", buckets: File? = null) =
-    ReleaseRun(workspace(buckets), public = public, tests = false, rebuild = names(rebuild), dropTargets = false, planOnly = true).release()
+fun plan(public: Boolean = false, rebuild: String = "", only: String = "", buckets: File? = null) =
+    ReleaseRun(workspace(buckets), public = public, tests = false, rebuild = names(rebuild), only = names(only), dropTargets = false, planOnly = true).release()
 
 @Description(
     "Publishes changed modules: into mavenLocal as <next>-local, or with --public for real (tests, upload, a commit; never a push).  " +
-        "--rebuild <repos or modules, comma-separated> releases them although unchanged.  --tests false skips the tests of a public release.  " +
+        "--rebuild <repos or modules, comma-separated> releases them although unchanged.  --only <repos, comma-separated> releases just those, and refuses if an earlier repo has changes to release first; it publishes no stack catalog.  --tests false skips the tests of a public release.  " +
         "--dropTargets lets a public release go out without a Kotlin Multiplatform target its last release had."
 )
-fun release(public: Boolean = false, tests: Boolean = public, rebuild: String = "", dropTargets: Boolean = false, buckets: File? = null) =
-    ReleaseRun(workspace(buckets), public = public, tests = tests, rebuild = names(rebuild), dropTargets = dropTargets, planOnly = false).release()
+fun release(public: Boolean = false, tests: Boolean = public, rebuild: String = "", only: String = "", dropTargets: Boolean = false, buckets: File? = null) =
+    ReleaseRun(workspace(buckets), public = public, tests = tests, rebuild = names(rebuild), only = names(only), dropTargets = dropTargets, planOnly = false).release()
 
 @Description("Moves a repo's upstream catalog pins to the latest released catalogs.")
 fun pin(repo: String, buckets: File? = null) {

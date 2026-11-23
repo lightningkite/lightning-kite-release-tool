@@ -40,16 +40,16 @@ class VersionTest {
     @Test
     fun abiChanges() {
         val abi = "class A {\n  fun a()\n}\n"
-        assertEquals(AbiChange.None, abiChange(abi, abi + "\n", emptySet()))
-        assertEquals(AbiChange.Added, abiChange(abi, "class A {\n  fun a()\n  fun b()\n}\n", emptySet()))
-        assertEquals(AbiChange.Broken, abiChange(abi, "class A {\n  fun a(Int)\n}\n", emptySet()))
-        assertEquals(AbiChange.Broken, abiChange(abi, "class A {\n}\n", emptySet()))
+        assertEquals(AbiChange.None, abiDiff(abi, abi + "\n", emptySet()).change)
+        assertEquals(AbiChange.Added, abiDiff(abi, "class A {\n  fun a()\n  fun b()\n}\n", emptySet()).change)
+        assertEquals(AbiChange.Broken, abiDiff(abi, "class A {\n  fun a(Int)\n}\n", emptySet()).change)
+        assertEquals(AbiChange.Broken, abiDiff(abi, "class A {\n}\n", emptySet()).change)
     }
 
     @Test
     fun aLineRemovedFromOneClassBreaksThoughAnotherHasIt() = assertEquals(
         AbiChange.Broken,
-        abiChange("class A {\n  fun a()\n}\nclass B {\n  fun a()\n}\n", "class A {\n  fun a()\n}\nclass B {\n}\n", emptySet()),
+        abiDiff("class A {\n  fun a()\n}\nclass B {\n  fun a()\n}\n", "class A {\n  fun a()\n}\nclass B {\n}\n", emptySet()).change,
     )
 
     private fun dump(jvmSsr: String, android: String) =
@@ -58,25 +58,52 @@ class VersionTest {
     @Test
     fun aLineRemovedFromOneTargetBreaksThoughAnotherHasIt() = assertEquals(
         AbiChange.Broken,
-        abiChange(dump(jvmSsr = "  fun a()\n", android = "  fun a()\n"), dump(jvmSsr = "", android = "  fun a()\n"), emptySet()),
+        abiDiff(dump(jvmSsr = "  fun a()\n", android = "  fun a()\n"), dump(jvmSsr = "", android = "  fun a()\n"), emptySet()).change,
     )
 
     @Test
     fun experimentalTargetsAreNotCompared() {
         val both = dump(jvmSsr = "  fun a()\n", android = "  fun a()\n")
-        assertEquals(AbiChange.None, abiChange(both, dump(jvmSsr = "", android = "  fun a()\n"), setOf("jvmSsr")))
-        assertEquals(AbiChange.None, abiChange(both, dump(jvmSsr = "  fun a()\n  fun b()\n", android = "  fun a()\n"), setOf("jvmSsr")))
-        assertEquals(AbiChange.Broken, abiChange(both, dump(jvmSsr = "  fun a()\n", android = ""), setOf("jvmSsr")))
+        assertEquals(AbiChange.None, abiDiff(both, dump(jvmSsr = "", android = "  fun a()\n"), setOf("jvmSsr")).change)
+        assertEquals(AbiChange.None, abiDiff(both, dump(jvmSsr = "  fun a()\n  fun b()\n", android = "  fun a()\n"), setOf("jvmSsr")).change)
+        assertEquals(AbiChange.Broken, abiDiff(both, dump(jvmSsr = "  fun a()\n", android = ""), setOf("jvmSsr")).change)
     }
 
     @Test
     fun starLeavesOutTheWholeModule() =
-        assertEquals(AbiChange.None, abiChange("# library-compose.api\nclass A {\n  fun a()\n}\n", "# library-compose.api\nclass A {\n}\n", setOf("*")))
+        assertEquals(AbiChange.None, abiDiff("# library-compose.api\nclass A {\n  fun a()\n}\n", "# library-compose.api\nclass A {\n}\n", setOf("*")).change)
 
     @Test
     fun anExperimentalTargetWithoutItsOwnDumpIsRefused() {
         val both = dump(jvmSsr = "  fun a()\n", android = "  fun a()\n")
-        assertFailsWith<UserError> { abiChange(both, both, setOf("jvmSrr")) }
-        assertFailsWith<UserError> { abiChange(both, both, setOf("js")) }
+        assertFailsWith<UserError> { abiDiff(both, both, setOf("jvmSrr")) }
+        assertFailsWith<UserError> { abiDiff(both, both, setOf("js")) }
+    }
+
+    @Test
+    fun aDiffNamesTheDeclarationsItTouches() {
+        val previous = "# jvm/library.api\npublic final class com/a/Kept {\n\tpublic final fun a ()V\n}\n\npublic final class com/a/Gone {\n\tpublic final fun g ()V\n}\n" +
+            "\n# library.klib.api\nfinal fun com.a/top(): kotlin/Int // com.a/top|top(){}[0]\n"
+        val current = "# jvm/library.api\npublic final class com/a/Kept {\n\tpublic final fun a (I)V\n}\n\npublic final class com/a/New {\n}\n" +
+            "\n# library.klib.api\n"
+        val diff = abiDiff(previous, current, emptySet())
+        assertEquals("removed or changed in Kept, Gone, top level; added in Kept, New", diff.summary())
+        assertEquals(
+            """
+            # jvm/library.api
+            - public final class com/a/Gone {
+            - 	public final fun g ()V
+              public final class com/a/Kept {
+            - 	public final fun a ()V
+            + 	public final fun a (I)V
+            + public final class com/a/New {
+
+            # library.klib.api
+              (top level)
+            - final fun com.a/top(): kotlin/Int // com.a/top|top(){}[0]
+
+            """.trimIndent() + "\n",
+            diff.render(),
+        )
     }
 }

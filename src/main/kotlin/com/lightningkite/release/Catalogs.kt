@@ -77,7 +77,7 @@ data class Catalog(val libraries: Map<String, Library>, val plugins: Map<String,
 }
 
 /**
- * The super catalog: every stack repo's catalog in one, each library named `<last part of its group>-<artifact>`
+ * The stack catalog: every repo's catalog in one, each library named `<last part of its group>-<artifact>`
  * (`services-basis`) and each plugin by the last part of its id.
  */
 fun mergeCatalogs(catalogs: List<Catalog>): Catalog {

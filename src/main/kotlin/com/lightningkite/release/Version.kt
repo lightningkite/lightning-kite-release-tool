@@ -53,7 +53,7 @@ enum class AbiChange { None, Added, Broken }
  * joins them: each file under a `# <path>` header, whose first directory is its target (`jvmSsr/library.api`).
  * [experimentalTargets] are left out of both sides; `*` leaves out the whole module.
  */
-fun abiChange(previous: String, current: String, experimentalTargets: Set<String>): AbiChange {
+fun abiDiff(previous: String, current: String, experimentalTargets: Set<String>): AbiDiff {
     val currentTargets = current.lines().filter { it.startsWith("# ") && '/' in it }.map { it.removePrefix("# ").substringBefore('/') }.toSet()
     val unknown = experimentalTargets - "*" - currentTargets
     if (unknown.isNotEmpty()) {
@@ -63,7 +63,7 @@ fun abiChange(previous: String, current: String, experimentalTargets: Set<String
 
     // A member line like `public fun toString ()Ljava/lang/String;` repeats across classes and targets, so a line
     // only counts together with its file and enclosing declaration.
-    fun keys(dump: String): Set<String> = buildSet {
+    fun lines(dump: String): Set<AbiLine> = buildSet {
         var path = ""
         var declaration = ""
         for (line in dump.lines()) {
@@ -72,16 +72,52 @@ fun abiChange(previous: String, current: String, experimentalTargets: Set<String
                 "*" in experimentalTargets || path.substringBefore('/', missingDelimiterValue = "") in experimentalTargets -> {}
                 line.isBlank() -> {}
                 line == "}" -> declaration = ""
-                !line[0].isWhitespace() && line.endsWith("{") -> { declaration = line; add("$path\n$line") }
-                else -> add("$path\n$declaration\n$line")
+                !line[0].isWhitespace() && line.endsWith("{") -> { declaration = line; add(AbiLine(path, line, member = null)) }
+                else -> add(AbiLine(path, declaration, line))
             }
         }
     }
-    val previousKeys = keys(previous)
-    val currentKeys = keys(current)
-    return when {
-        !currentKeys.containsAll(previousKeys) -> AbiChange.Broken
-        currentKeys.size > previousKeys.size -> AbiChange.Added
+    val previousLines = lines(previous)
+    val currentLines = lines(current)
+    return AbiDiff(removed = previousLines - currentLines, added = currentLines - previousLines)
+}
+
+/** A line of an ABI dump with the file and declaration it is in.  A declaration's own line has no [member]. */
+data class AbiLine(val path: String, val declaration: String, val member: String?)
+
+class AbiDiff(val removed: Set<AbiLine>, val added: Set<AbiLine>) {
+    val change: AbiChange get() = when {
+        removed.isNotEmpty() -> AbiChange.Broken
+        added.isNotEmpty() -> AbiChange.Added
         else -> AbiChange.None
+    }
+
+    /** The declarations touched, by simple name: `removed or changed in Foo, Bar; added in Baz`. */
+    fun summary(): String {
+        // `public final class com/a/Foo : …` on the JVM, `final class com.a/Foo : …` in a klib dump.
+        fun name(declaration: String) = Regex("""\S*/\S*""").find(declaration)?.value?.substringAfterLast('/') ?: "top level"
+        fun names(lines: Set<AbiLine>): String {
+            val distinct = lines.map { name(it.declaration) }.distinct()
+            val shown = distinct.take(5).joinToString()
+            return if (distinct.size > 5) "$shown and ${distinct.size - 5} more" else shown
+        }
+        return listOfNotNull(
+            removed.takeIf { it.isNotEmpty() }?.let { "removed or changed in ${names(it)}" },
+            added.takeIf { it.isNotEmpty() }?.let { "added in ${names(it)}" },
+        ).joinToString("; ")
+    }
+
+    /** Like a unified diff, grouped by dump file and declaration; a changed line shows as removed and added. */
+    fun render(): String = buildString {
+        val signed = removed.map { '-' to it } + added.map { '+' to it }
+        for ((path, inFile) in signed.groupBy { it.second.path }.toSortedMap()) {
+            appendLine("# $path")
+            for ((declaration, inDeclaration) in inFile.groupBy { it.second.declaration }.toSortedMap()) {
+                val own = inDeclaration.firstOrNull { it.second.member == null }?.first ?: ' '
+                appendLine("$own ${declaration.ifEmpty { "(top level)" }}")
+                for ((sign, line) in inDeclaration.filter { it.second.member != null }.sortedBy { it.second.member }) appendLine("$sign ${line.member}")
+            }
+            appendLine()
+        }
     }
 }

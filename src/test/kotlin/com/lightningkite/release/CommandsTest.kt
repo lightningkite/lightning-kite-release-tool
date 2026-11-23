@@ -28,8 +28,8 @@ class CommandsTest {
             create("side") { from("com.lightningkite.stack:side-catalog:unreleased") }
             create("never") { from("com.lightningkite.stack:never-catalog:unreleased") }
         """.trimIndent())
-        val repos = listOf("up", "side", "never", "down").map { Repo(it, work.resolve(it), "s3://stack", inStack = true) }
-        val workspace = Workspace(work, repos, mavenLocal = work.resolve("m2"), rehearsalBuckets = work.resolve("buckets"), gradleArguments = listOf())
+        val repos = listOf("up", "side", "never", "down").map { Repo(it, work.resolve(it), "s3://stack") }
+        val workspace = Workspace(work, repos, stackBucket = "s3://stack", mavenLocal = work.resolve("m2"), rehearsalBuckets = work.resolve("buckets"), gradleArguments = listOf())
 
         pinToLatest(workspace, workspace.repo("down"))
 
