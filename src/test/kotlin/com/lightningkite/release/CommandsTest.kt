@@ -5,6 +5,7 @@ import java.nio.file.Files
 import java.time.ZonedDateTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class CommandsTest {
@@ -53,5 +54,12 @@ class CommandsTest {
         assertEquals("body {}", published.resolve("1002.1.0/docs/styles/main.css").readText())
         assertEquals("${bucket.url}/com/example/services/basis/1002.1.0/docs/index.html", address)
         assertTrue(address in published.resolve("docs/index.html").readText(), "the redirect points into this repository, whichever bucket it is")
+    }
+
+    @Test
+    fun publicOnlyOptionsAreRefusedLocally() {
+        assertFailsWith<UserError> { release(only = "up") }
+        assertFailsWith<UserError> { release(dropTargets = true) }
+        assertFailsWith<UserError> { release(buckets = work) }
     }
 }

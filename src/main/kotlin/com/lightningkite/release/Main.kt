@@ -36,17 +36,24 @@ private fun workspace(rehearsalBuckets: File?): Workspace {
 // kotliner-cli can't take a list of names, so --rebuild and --only are each one comma-separated argument.
 private fun names(commaSeparated: String): Set<String> = commaSeparated.split(',').filter { it.isNotBlank() }.toSet()
 
-@Description("Prints what a release would do, module by module, and why.  Leaves nothing edited or published.")
-fun plan(public: Boolean = false, rebuild: String = "", only: String = "", buckets: File? = null) =
-    ReleaseRun(workspace(buckets), public = public, tests = false, rebuild = names(rebuild), only = names(only), dropTargets = false, planOnly = true).release()
+@Description("Prints what a public release would do, module by module, and why.  Leaves nothing edited or published.")
+fun plan(rebuild: String = "", only: String = "", buckets: File? = null) =
+    PublicRelease(workspace(buckets), tests = false, rebuild = names(rebuild), only = names(only), dropTargets = false, planOnly = true).release()
 
 @Description(
-    "Publishes changed modules: into mavenLocal as <next>-local, or with --public for real (tests, upload, a commit; never a push).  " +
-        "--rebuild <repos or modules, comma-separated> releases them although unchanged.  --only <repos, comma-separated> releases just those, and refuses if an earlier repo has changes to release first; it publishes no stack catalog.  --tests false skips the tests of a public release.  " +
-        "--dropTargets lets a public release go out without a Kotlin Multiplatform target its last release had."
+    "Publishes changed modules: into mavenLocal at version `local` (reading no bucket), or with --public for real (tests, upload, a commit; never a push).  " +
+        "--rebuild <repos or modules, comma-separated> releases them although unchanged.  --tests runs the tests; a public release runs them unless --tests false.  " +
+        "Public only: --only <repos, comma-separated> releases just those, and refuses if an earlier repo has changes to release first; it publishes no stack catalog.  " +
+        "--dropTargets lets a release go out without a Kotlin Multiplatform target its last release had.  --buckets <directory> rehearses without S3."
 )
-fun release(public: Boolean = false, tests: Boolean = public, rebuild: String = "", only: String = "", dropTargets: Boolean = false, buckets: File? = null) =
-    ReleaseRun(workspace(buckets), public = public, tests = tests, rebuild = names(rebuild), only = names(only), dropTargets = dropTargets, planOnly = false).release()
+fun release(public: Boolean = false, tests: Boolean = public, rebuild: String = "", only: String = "", dropTargets: Boolean = false, buckets: File? = null) {
+    if (public) {
+        PublicRelease(workspace(buckets), tests = tests, rebuild = names(rebuild), only = names(only), dropTargets = dropTargets, planOnly = false).release()
+        return
+    }
+    if (only.isNotEmpty() || dropTargets || buckets != null) throw UserError("--only, --dropTargets and --buckets are for --public; a local release reads no bucket and skips what didn't change")
+    LocalRelease(workspace(rehearsalBuckets = null), tests = tests, rebuild = names(rebuild)).release()
+}
 
 @Description("Moves a repo's upstream catalog pins to the latest released catalogs.")
 fun pin(repo: String, buckets: File? = null) {

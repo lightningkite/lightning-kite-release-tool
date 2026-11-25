@@ -110,9 +110,9 @@ Run as `./lk`.  No Gradle starts until a module is known to have changed.
 
 | Command | Does |
 |---|---|
-| `lk plan [--public]` | Prints each module that would be published: old → new version and why, and for a changed ABI the declarations it touches and a diff file.  Also lists modules built with older build logic.  Leaves no file edited; runs the ABI dump for changed modules, since the bump depends on it. |
+| `lk plan` | Prints each module a public release would publish: old → new version and why, and for a changed ABI the declarations it touches and a diff file.  Also lists modules built with older build logic.  Leaves no file edited; runs the ABI dump for changed modules, since the bump depends on it. |
 | `lk pin <repo>` | Moves a repo's upstream pins to the latest catalogs, for developing against a new upstream minor. |
-| `lk release` | **Local, the default.**  Publishes changed modules to mavenLocal as `<next>-local`. |
+| `lk release` | **Local, the default.**  Publishes changed modules to mavenLocal at `local` (see "Local mode"). |
 | `lk release --public` | The real release to LK Maven. |
 | `--rebuild <repo\|module>[,…]` | Adds a patch release for modules that are otherwise unchanged.  A name that matches nothing is an error. |
 | `--only <repo>[,…]` | Releases only those repos; only they must be clean.  Repos after the last are not walked.  An earlier repo with changes to release stops the run, since the named repos may build on it.  No stack catalog: the repos not walked may still be built against an older major of what went out, which only a full run checks. |
@@ -141,8 +141,7 @@ reactive, kiteui, lightning-server-kiteui, lightning-bot (own bucket), human-rel
    `build/staging-repo`; stop if a target was lost (below); run Gradle again to publish the same into mavenLocal,
    so the releasing machine can build against them at once; commit ("Release <module> <version>, …", including any pin move); upload artifacts;
    merge each `maven-metadata.xml`; upload the release records.  The tool does not push.
-6. Local: run Gradle once with `publishToMavenLocal` for exactly those modules and the catalog; write the release
-   records into mavenLocal; restore the version lines and pins.
+Local releases follow their own rules; see "Local mode".
 
 Failure handling: a failed build restores the files and stops the run.  A failed upload after the commit heals on
 rerun: the committed versions are the floor, and each module without a release record is published again.
@@ -163,22 +162,30 @@ releases aren't checked.
 
 ### Local mode
 
-- A dirty tree is fine.  No commits, no S3 writes.
-- The bump is always computed against the last **public** release.  Republishing locally any number of times gives
-  the same `X-local`, unless the accumulated changes raise the level (a patch becoming a minor or a major).
-- Release records are written to mavenLocal too, so a module unchanged since its last local publish is skipped.
-- A `-local` build is used only while it is newer than the latest public release, so stale ones drop out by
-  themselves.  Gradle orders `X-local` below `X`.  Publishing `X-local` deletes the module's higher `-local`
-  builds: only a version reset leaves those, and the newest-wins rule would otherwise pick them.
-- A local build made by `--rebuild` stays in use by later runs without the flag, for as long as the module's inputs
-  are the ones it was built from.
-- `X-local` names whatever was built last.  So when a run builds a module again, every local build that was built
-  against that module's `-local` version is built again in the same run, and so on down.  A run that dies in
-  between leaves those stale; `--rebuild` them.
-- Each repo with local builds publishes `<repo>-catalog:local`; downstream repos are built with their pins on it.
-  The run ends by publishing `stack-catalog:local` and `stack-bom:local`; the app under test points at those and
-  has `mavenLocal()`.
-- On start, the tool restores any `-local` version or pin left behind by a run that crashed.
+Every module of every repo goes into mavenLocal at the plain version `local`, built with every upstream pin on
+`local`.  No bucket is read, so it needs no network or credentials.  The only thing it compares against is the
+last local build: each module's release record and ABI at `<artifact>-local-release.properties` and
+`<artifact>-local-abi.txt` in mavenLocal.
+
+- A dirty tree is fine.  No commits, no S3 at all.
+- A module is built when:
+  1. it has no local build yet (so the first run builds the whole stack);
+  2. its inputs hash differs from its local record;
+  3. its repo's build logic hash differs from its local record (buildSrc, root script and `libs.versions.toml`
+     changes, third-party versions included);
+  4. `--rebuild` names it or its repo;
+  5. a sibling it depends on is built in this run.  Siblings build in the same Gradle run, before their new ABI
+     is known, so this rule is conservative; Gradle's compile avoidance keeps it cheap, because the version
+     never changes;
+  6. a module of an earlier repo that it depends on was built in this run, and the new ABI breaks against that
+     module's previous local ABI.  Added lines don't count; no previous ABI counts as a break.
+- `local` names whatever was built last.  A run that dies after an upstream break, before its dependents were
+  built, leaves them stale; `--rebuild` them.
+- Each repo publishes `<repo>-catalog:local` whenever it builds anything, or when its catalog doesn't list every
+  module at `local`.  The run ends by publishing `stack-catalog:local` and `stack-bom:local` when the modules they
+  list changed; the app under test points at those and has `mavenLocal()`.
+- On start, the tool restores any `local` version or pin left behind by a run that crashed.
+- `--only`, `--dropTargets` and `--buckets` are for public releases only.
 
 `--public` refuses a dirty tree.
 

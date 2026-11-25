@@ -44,8 +44,7 @@ fun discoverModules(root: File): List<Module> = (listOf(root) + root.listFiles()
             directory = directory,
             gradlePath = if (directory == root) ":" else ":${directory.name}",
             group = groupLine.find(text)?.groupValues?.get(1) ?: throw IllegalStateException("$file has a version but no group"),
-            // `-local` is what a crashed local run leaves behind until the journal restores it.
-            written = Version.parse(version.removeSuffix("-local")),
+            written = Version.parse(version),
             experimentalTargets = experimentalTargetsLine.find(text)?.groupValues?.get(1)?.split(',')?.toSet().orEmpty(),
         )
     }

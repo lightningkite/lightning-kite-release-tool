@@ -39,6 +39,16 @@ class EndToEndTest {
         gradleArguments = listOf("--offline"),
     )
 
+    // A local release reads no bucket: these name none that a run could open, and Gradle gets no rehearsal buckets.
+    private val localWorkspace = Workspace(
+        home = tool,
+        repos = listOf(Repo("up", up, "s3://no-such-bucket"), Repo("down", down, "s3://no-such-bucket")),
+        stackBucket = "s3://no-such-bucket",
+        mavenLocal = mavenLocal,
+        rehearsalBuckets = null,
+        gradleArguments = listOf("--offline"),
+    )
+
     private fun write(path: String, text: String) = work.resolve(path).apply { parentFile.mkdirs() }.writeText(text.trimIndent() + "\n")
 
     /** What the last release printed.  Gradle's own output goes to `build/lk-output/gradle.log`, not here. */
@@ -50,7 +60,8 @@ class EndToEndTest {
         val stdout = System.out
         System.setOut(PrintStream(printed, true))
         try {
-            ReleaseRun(workspace, public = public, tests = tests, rebuild = rebuild, only = only, dropTargets = dropTargets, planOnly = false).release()
+            if (public) PublicRelease(workspace, tests = tests, rebuild = rebuild, only = only, dropTargets = dropTargets, planOnly = false).release()
+            else LocalRelease(localWorkspace, tests = tests, rebuild = rebuild).release()
         } finally {
             System.setOut(stdout)
             print(printed)
@@ -303,46 +314,11 @@ class EndToEndTest {
         val implVersion = latest("com.example.up:impl")!!
         assertEquals(implBefore.size + 1, versions("com.example.up:impl").size)
 
-        // A local release: `<next>-local` in mavenLocal, nothing committed, the bucket untouched.
-        write("up/base/src/main/kotlin/Base.kt", "package up\n\nclass Base {\n    fun renamed(): Int = 5\n    fun b(): Int = 3\n}")
-        // A higher `-local` left from before a version reset is removed, or later runs would compare against it.
-        val beforeReset = mavenLocal.resolve("com/example/up/base/1003.0.0-local").apply { mkdirs() }
-        beforeReset.resolve("base-1003.0.0-local-release.properties").writeText("inputsHash = old\nbuildLogicHash = old\n")
-        beforeReset.resolve("base-1003.0.0-local-abi.txt").writeText("")
-        release(public = false)
-        assertFalse(beforeReset.exists())
-        val firstLocal = record(mavenLocal, "com.example.up:base", "1002.0.1-local")!!
-        assertEquals("1002.0.0", latest("com.example.up:base"))
-        assertEquals("M base/src/main/kotlin/Base.kt", git(up, "status", "--porcelain"))
-        assertNull(record(mavenLocal, "com.example.up:impl", "$implVersion-local"), "unchanged modules aren't published locally")
-        assertEquals("1002.0.1-local", Catalog.parse(mavenLocal.resolve("com/lightningkite/stack-catalog/local/stack-catalog-local.toml").readText()).versions()["com.example.up:base"])
-        // Again with nothing changed: no Gradle.
-        val runsBeforeRepeat = gradleRuns
-        release(public = false)
-        assertEquals(runsBeforeRepeat, gradleRuns)
-        assertEquals(listOf("Nothing to release.", ""), output, "nothing about unchanged modules")
-        // More changes of the same level republish the same version.
-        write("up/base/src/main/kotlin/Base.kt", "package up\n\nclass Base {\n    fun renamed(): Int = 6\n    fun b(): Int = 3\n}")
-        release(public = false)
-        assertTrue(record(mavenLocal, "com.example.up:base", "1002.0.1-local")!!.inputsHash != firstLocal.inputsHash)
-        assertFalse(mavenLocal.resolve("com/example/up/base/1002.0.2-local").exists())
-
-        // --rebuild publishes a local build again although nothing changed.
-        val runsBeforeRebuild = gradleRuns
-        release(public = false, rebuild = setOf("base"))
-        assertTrue(gradleRuns > runsBeforeRebuild)
-
-        // A local catalog that no longer matches what it should list is published again by itself.
-        val localCatalog = mavenLocal.resolve("com/lightningkite/stack/up-catalog/local/up-catalog-local.toml")
-        localCatalog.writeText(localCatalog.readText().replace("1002.0.1-local", "1002.0.0-local"))
-        release(public = false)
-        assertEquals("1002.0.1-local", Catalog.parse(localCatalog.readText()).versions()["com.example.up:base"])
-        assertTrue(output.any { it == "up: published to mavenLocal its catalog" })
-
         // A name --rebuild doesn't know is an error, not a silent no-op.
-        assertFailsWith<UserError> { release(public = false, rebuild = setOf("bsae")) }
+        assertFailsWith<UserError> { release(public = true, rebuild = setOf("bsae")) }
 
         // A public release refuses a dirty tree.
+        write("up/base/src/main/kotlin/Base.kt", "package up\n\nclass Base {\n    fun renamed(): Int = 5\n    fun b(): Int = 3\n}")
         assertFails { release(public = true) }
         commit(up)
 
@@ -374,27 +350,8 @@ class EndToEndTest {
         release(public = true, rebuild = setOf("solo"), dropTargets = true)
         assertTrue(mavenLocal.resolve("com/example/down/solo/1000.0.1/solo-1000.0.1.jar").isFile)
 
-        // A local --rebuild stays in use by later plain runs: the catalog keeps naming it and nothing is built again.
-        fun localDownCatalog() = Catalog.parse(mavenLocal.resolve("com/lightningkite/stack/down-catalog/local/down-catalog-local.toml").readText()).versions()
-        release(public = false, rebuild = setOf("solo"))
-        assertEquals("1000.0.2-local", localDownCatalog()["com.example.down:solo"])
-        val runsBeforePlain = gradleRuns
-        release(public = false)
-        assertEquals("1000.0.2-local", localDownCatalog()["com.example.down:solo"])
-        assertEquals("1000.0.2-local", Catalog.parse(mavenLocal.resolve("com/lightningkite/stack-catalog/local/stack-catalog-local.toml").readText()).versions()["com.example.down:solo"])
-        assertEquals(runsBeforePlain, gradleRuns)
-
-        // `X-local` names whatever was built last, so a local build is built again when one it was built against is.
-        write("up/base/src/main/kotlin/Base.kt", "package up\n\nclass Base {\n    fun renamed(): Int = 7\n    fun b(): Int = 3\n}")
-        release(public = false, rebuild = setOf("app"))
-        assertEquals("1002.0.2-local", record(mavenLocal, "com.example.down:app", "1002.0.1-local")!!.dependencies.getValue("com.example.up:base").version)
-        write("up/base/src/main/kotlin/Base.kt", "package up\n\nclass Base {\n    fun renamed(): Int = 8\n    fun b(): Int = 3\n}")
-        release(public = false)
-        assertTrue(output.any { it.startsWith("down: published to mavenLocal app ") }, "app was built against the base this run replaced")
-        assertFalse(output.any { it.startsWith("down: published to mavenLocal") && "solo" in it }, "solo doesn't depend on it")
-        assertEquals("1000.0.1", latest("com.example.down:solo", downBucket))
-
         // --only releases just the named repos, although another is dirty, and leaves the stack catalog to a full run.
+        write("up/base/src/main/kotlin/Base.kt", "package up\n\nclass Base {\n    fun renamed(): Int = 8\n    fun b(): Int = 3\n}")
         commit(up)
         val scratch = down.resolve("app/src/main/kotlin/Scratch.kt").apply { writeText("package down\n") }
         val baseBeforeOnly = versions("com.example.up:base")
@@ -416,5 +373,63 @@ class EndToEndTest {
         assertEquals(baseBeforeRefusal, versions("com.example.up:base"))
         assertTrue(git(down, "status", "--porcelain").isEmpty())
         assertFailsWith<UserError> { release(public = true, only = setOf("dwon")) }
+
+        // A local release: every module at plain `local` in mavenLocal, built against `local` upstreams, nothing
+        // committed.  Its workspace names no bucket a run could open.
+        fun builtLocally() = output.filter { " → local: " in it }.map { it.trim().substringBefore(" → ") }.toSet()
+        fun localStackCatalog() = Catalog.parse(mavenLocal.resolve("com/lightningkite/stack-catalog/local/stack-catalog-local.toml").readText())
+        release(public = false)
+        val everyModule = setOf("com.example.up:base", "com.example.up:util", "com.example.up:impl", "com.example.down:app", "com.example.down:solo")
+        assertEquals(everyModule, builtLocally())
+        assertTrue(output.any { it == "  com.example.down:app → local: no local build" }, output.joinToString("\n"))
+        assertEquals(Dependency("local", Scope.Api), record(mavenLocal, "com.example.down:app", "local")!!.dependencies["com.example.up:base"])
+        assertEquals(everyModule + stackBom, localStackCatalog().versions().keys)
+        assertEquals(setOf("local"), localStackCatalog().versions().values.toSet())
+        assertTrue(git(up, "status", "--porcelain").isEmpty() && git(down, "status", "--porcelain").isEmpty(), "versions and pins were put back")
+
+        // Again with nothing changed: no Gradle.
+        val runsBeforeRepeat = gradleRuns
+        release(public = false)
+        assertEquals(runsBeforeRepeat, gradleRuns)
+        assertEquals(listOf("Nothing to release.", ""), output, "nothing about unchanged modules")
+
+        // A change that leaves the ABI alone builds the module and the siblings that depend on it, but no other repo.
+        write("up/base/src/main/kotlin/Base.kt", "package up\n\nclass Base {\n    fun renamed(): Int = 10\n    fun b(): Int = 3\n}")
+        release(public = false)
+        assertEquals(setOf("com.example.up:base", "com.example.up:util", "com.example.up:impl"), builtLocally())
+        assertTrue(output.any { it == "  com.example.up:util → local: com.example.up:base is built too" }, output.joinToString("\n"))
+        assertFalse(output.any { it.startsWith("stack:") }, "the stack catalog lists what it did")
+
+        // A break also builds what other repos built on it.
+        write("up/base/src/main/kotlin/Base.kt", "package up\n\nclass Base {\n    fun renamed(extra: Int = 0): Int = 10 + extra\n    fun b(): Int = 3\n}")
+        release(public = false)
+        assertEquals(setOf("com.example.up:base", "com.example.up:util", "com.example.up:impl", "com.example.down:app"), builtLocally())
+        assertTrue(output.any { it == "  com.example.down:app → local: com.example.up:base broke its ABI" }, output.joinToString("\n"))
+
+        // A change to the build logic builds that repo's modules.
+        down.resolve("build.gradle.kts").appendText("// changed\n")
+        release(public = false)
+        assertEquals(setOf("com.example.down:app", "com.example.down:solo"), builtLocally())
+
+        release(public = false, rebuild = setOf("solo"))
+        assertEquals(setOf("com.example.down:solo"), builtLocally())
+
+        // A missing local catalog is published again by itself.
+        mavenLocal.resolve("com/lightningkite/stack/up-catalog/local").deleteRecursively()
+        release(public = false)
+        assertEquals(setOf(), builtLocally())
+        assertTrue(output.any { it == "up: published to mavenLocal its catalog" }, output.joinToString("\n"))
+        assertTrue(mavenLocal.resolve(catalogFile("up", "local")).isFile)
+
+        // A module added to a repo is a new entry of the stack catalog.
+        write("down/extra/gradle.properties", "group=com.example.down\nversion=1000.0.0")
+        write("down/extra/build.gradle.kts", "")
+        write("down/extra/src/main/kotlin/Extra.kt", "package down\n\nclass Extra")
+        down.resolve("settings.gradle.kts").writeText(down.resolve("settings.gradle.kts").readText().replace("include(\":app\", \":solo\")", "include(\":app\", \":solo\", \":extra\")"))
+        release(public = false)
+        assertTrue("com.example.down:extra" in builtLocally())
+        assertEquals("local", localStackCatalog().versions()["com.example.down:extra"])
+
+        assertFailsWith<UserError> { release(public = false, rebuild = setOf("bsae")) }
     }
 }

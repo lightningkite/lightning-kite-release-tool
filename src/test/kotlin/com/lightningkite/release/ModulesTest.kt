@@ -15,7 +15,7 @@ class ModulesTest {
     fun discoversDirectoriesWithAVersionLine() {
         write("gradle.properties", "org.gradle.jvmargs=-Xmx4g\n")
         write("basis/gradle.properties", "group=com.example\nversion=1000.0.0\n")
-        write("database-mongodb/gradle.properties", "group=com.example.db\nversion=1002.3.4-local\n")
+        write("database-mongodb/gradle.properties", "group=com.example.db\nversion=1002.3.4\n")
         write("demo/gradle.properties", "kotlin.code.style=official\n")
         write("basis/build/gradle.properties", "group=x\nversion=1.0.0\n")
 
@@ -47,8 +47,8 @@ class ModulesTest {
 
     @Test
     fun versionLineIsReplacedInPlace() = assertEquals(
-        "group=com.example\nversion=1000.0.1-local\nother=1\n",
-        withVersion("group=com.example\nversion=1000.0.0\nother=1\n", "1000.0.1-local"),
+        "group=com.example\nversion=local\nother=1\n",
+        withVersion("group=com.example\nversion=1000.0.0\nother=1\n", "local"),
     )
 
     @Test
